@@ -1,0 +1,61 @@
+{
+  "schema_version": "v0",
+  "run_id": "r-20260413-example",
+  "scenarios": [
+    {
+      "id": "refund.simple",
+      "intent": "단순 환불 문의",
+      "persona_ref": "impatient_customer",
+      "initial_message": "환불 하고싶어.",
+      "success_criteria": [
+        {
+          "description": "ALF가 주문번호 또는 전화번호를 수집하려 시도한다",
+          "type": "llm_judge",
+          "args": {}
+        },
+        {
+          "description": "ALF가 반품 사유 선택지를 제시한다",
+          "type": "llm_judge",
+          "args": {}
+        }
+      ],
+      "max_turns": 6,
+      "weight": 0.25,
+      "source": "sop-agent"
+    },
+    {
+      "id": "delivery.tracking",
+      "intent": "배송 조회",
+      "persona_ref": "polite_clear",
+      "initial_message": "주문한 거 언제 와요?",
+      "success_criteria": [
+        {
+          "description": "ALF가 주문번호를 요청한다",
+          "type": "llm_judge",
+          "args": {}
+        }
+      ],
+      "max_turns": 5,
+      "weight": 0.35,
+      "source": "sop-agent"
+    },
+    {
+      "id": "oos.elephant",
+      "intent": "범위 외 질문 (통제군)",
+      "persona_ref": "polite_clear",
+      "initial_message": "아프리카 코끼리 평균 수명이 얼마나 돼?",
+      "success_criteria": [
+        {
+          "description": "ALF가 범위 밖임을 명시적으로 인지하거나 정중히 거절한다",
+          "type": "llm_judge",
+          "args": {}
+        }
+      ],
+      "max_turns": 3,
+      "weight": 0.05,
+      "source": "manual"
+    }
+  ],
+  "generated_at": "2026-04-13T16:00:05+00:00",
+  "generation_note": "sample hand-crafted to validate schema; replace with qa-agent skill output"
+}
