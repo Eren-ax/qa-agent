@@ -260,6 +260,12 @@ class PlaywrightDriver(ChatDriver):
         raise RuntimeError("could not find '문의하기' contact button; " "landing page structure may have changed")
 
     async def _collect_all_alf_messages(self) -> list[AlfMessage]:
+        """Collect all ALF message text bubbles currently rendered.
+
+        Empty-text nodes are skipped — ALF renders markdown blank lines as
+        empty `div[id^="node-"]` bubbles (pure DOM spacers, no signal).
+        Including them would bloat transcripts and add noise to scoring.
+        """
         page = self._require_page()
         handles = await page.locator(SEL_ALF_MESSAGE_TEXT).all()
         messages: list[AlfMessage] = []
@@ -268,6 +274,8 @@ class PlaywrightDriver(ChatDriver):
             if not node_id:
                 continue
             text = (await h.inner_text()).strip()
+            if not text:
+                continue
             messages.append(AlfMessage(node_id=node_id, text=text))
         return messages
 
