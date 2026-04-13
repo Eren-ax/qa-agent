@@ -1,59 +1,78 @@
-# Python-boilerplate
+# alf-qa-agent
 
-> A brief description of your project, what it is used for and how does life get awesome when someone starts to use it.
+QA automation toolkit for **ALF** (Channel.io AI Agent).
 
-This repository is boilerplate for golang.
-Please find the parts that say 'FIXED_ME' and use them after modifying them.
+Given a test channel URL and a sop-agent analysis result, this tool generates
+coverage-aware QA scenarios, drives turn-by-turn conversations with ALF through
+a headless browser, and scores the results against a versioned judgment rubric.
 
-## Features
+## Status
 
-> What's all the bells and whistles this project can perform?
+**Early development.** Not yet usable. See "Roadmap" below for current phase.
 
-- What's the main functionality
-- You can also do another thing
-- If you get really randy, you can even do this
-- Built-in Prometheus metrics instrumentation for request latency insights
+## Architecture
 
-## Installing / Getting started
+```
+sop-agent (external)
+    │  analysis result (JSON)
+    ▼
+┌──────────────────────┐        ┌──────────────────────┐
+│ qa-agent (skill)     │──────▶ │ scoring-agent (skill)│
+│ generates scenarios  │ trans- │ labels transcripts   │
+│ drives dialogues     │ cripts │ emits report.md      │
+└──────────┬───────────┘        └──────────────────────┘
+           │
+           ▼
+   tools/ (Python I/O)
+   - chat_driver.py (Playwright)
+   - result_store.py (JSONL)
+```
 
-> A quick introduction of the minimal setup you need to get a hello world up & running.
-> ...
+- **Skills** (Claude): scenario generation, persona assignment, orchestration, judging.
+- **Python tools**: deterministic I/O only — browser control and result persistence.
 
-## Initial Configuration
+## Directory layout
 
-> A quick introduction of the minimal setup you need to get a hello world up &
-> running.
+```
+tools/           Python I/O modules (chat driver, result store)
+skills/
+  qa-agent/      Scenario generation + dialogue orchestration
+  scoring-agent/ Transcript labeling + report aggregation
+prompts/         Coverage rules, persona archetypes, judge rubric, sop normalizer
+tests/           pytest suite
+examples/        Dummy project configs / sample sop-agent outputs
+inputs/          (gitignored) sop-agent results, per-run inputs
+projects/        (gitignored) client-specific configs
+storage/         (gitignored) run outputs (transcripts, scenarios, reports)
+```
 
-### Setup for development mode
+## Setup
+
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 make setup
 ```
 
-### Run application in development mode
+This installs dependencies, pre-commit hooks, and the Playwright Chromium browser.
+
+## Usage
+
+Not yet wired. See `skills/qa-agent/SKILL.md` and `skills/scoring-agent/SKILL.md`
+for the planned interfaces.
+
+## Development
 
 ```bash
-# default port is `8088`
-make dev
+make pretty   # ruff format + lint
+make test     # pytest
 ```
 
-### Run linter and formatter
+## Roadmap
 
-```bash
-make pretty
-```
-
-### Run pytest
-
-```bash
-make test
-```
-
-## Prometheus metrics
-
-- Metrics endpoint: `GET /metrics`
-- Additional custom metrics can be registered whenever you need them
-
-## Reference
-
-> link for related documents.
+- [x] **Phase 0** — Scaffold (this commit range)
+- [ ] **Phase 1** — `tools/chat_driver.py` (Playwright) + interactive CLI
+- [ ] **Phase 2** — Run storage schema + `tools/result_store.py`
+- [ ] **Phase 3** — `qa-agent` skill + prompts (scenario generation, personas)
+- [ ] **Phase 4** — `scoring-agent` skill + judge rubric v1.0
+- [ ] **Phase 5** — Partner-time user README + zip release pipeline
