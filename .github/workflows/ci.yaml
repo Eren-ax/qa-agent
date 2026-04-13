@@ -1,0 +1,30 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - exp
+      - main
+      - feature/**
+    tags: ["**"]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build_and_push_image:
+    name: Build Docker Image
+    runs-on: channel-runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: channel-io/ch-github-actions/aws-ssm-getparameters@v1
+        with:
+          parameter-pairs: "/channel/github/devops/access-token = GITHUB_TOKEN"
+
+      - name: Build and push image
+        uses: channel-io/ch-github-actions/docker-build-push@v1
+        with:
+          secret-envs: |
+            GITHUB_TOKEN=GITHUB_TOKEN
