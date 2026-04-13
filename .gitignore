@@ -1,6 +1,29 @@
+# Python
 __pycache__
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
 
+# Jupyter
 **/*.ipynb
 **/.ipynb_checkpoints
 
+# Secrets / local config
 **/.env
+*.local.*
+
+# Sensitive data — NEVER commit
+# Client configs, run outputs, sop-agent inputs may contain PII / customer data
+projects/
+storage/
+inputs/
+cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
