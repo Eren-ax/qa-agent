@@ -5,9 +5,12 @@ description = "QA automation toolkit for ALF (Channel.io AI Agent). Provides Pyt
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic>=0.40.0",
     "playwright>=1.48.0",
     "pydantic-settings>=2.7.1",
+    "python-dotenv>=1.0.1",
     "python-json-logger>=3.3.0",
+    "pyyaml>=6.0.2",
 ]
 
 [dependency-groups]
