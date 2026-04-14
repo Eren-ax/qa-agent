@@ -20,6 +20,21 @@ consequential prompt in qa-agent.
 | `personas` | the fixed pool from `prompts/persona_archetypes.md` |
 | `target_total` | integer; total scenario count target (default: 25) |
 
+### New in v1: `canonical.intents[].patterns`
+
+Each intent now carries a `patterns` list extracted from sop-agent
+`patterns.json`. Each pattern represents a **sub-type of consultation**
+observed in real data, with:
+
+- `name` — pattern label (e.g. "반품 수거 요청")
+- `type` — `정보_요청` / `프로세스_문의` / `문제_신고`
+- `frequency` — relative sample count within the cluster
+- `common_phrases` — **verbatim customer utterances** from real conversations
+
+These patterns are the primary source for scenario diversity. FAQ Q's remain
+the first choice for `happy` scenarios; `common_phrases` from patterns are
+the primary source for `edge` and `unhappy` scenarios.
+
 ---
 
 ## Output
@@ -34,7 +49,7 @@ A JSON document matching the `ScenarioSet` shape used by
   "run_id": "<provided by skill>",
   "scenarios": [
     {
-      "id": "<intent_id>.<kind>.<seq>",
+      "id": "<intent_id>.<kind>.<seq>",   // kind = happy|unhappy|edge|escalation|oos
       "intent": "<Korean label from canonical.intents[].label>",
       "persona_ref": "<one of the five archetypes>",
       "initial_message": "<verbatim FAQ Q, OOS seed, or task trigger>",
@@ -47,7 +62,9 @@ A JSON document matching the `ScenarioSet` shape used by
       ],
       "max_turns": <int>,
       "weight": <float>,
-      "source": "sop-agent | manual | oos"
+      "difficulty_tier": "happy | unhappy | edge",
+      "source": "sop-agent | manual | oos",
+      "source_pattern": "<pattern name, if seeded from common_phrases>"
     }
   ],
   "generated_at": "<ISO8601 UTC>",
@@ -65,13 +82,36 @@ Every scenario belongs to one **kind** (encoded in `id`):
 
 | `kind` | When to emit | Typical max_turns |
 |---|---|---|
-| `happy` | the intent's most common path resolves cleanly via FAQ knowledge | 6 |
-| `edge` | branch where automation_ready is `true` but the ask is harder (multi-product, ambiguous identifier, partial cancellation) | 8 |
+| `happy` | the intent's most common pattern — resolves cleanly via FAQ knowledge. Seeded from highest-frequency patterns or FAQ Q's. | 6 |
+| `unhappy` | a realistic but harder variation: vague phrasing, emotional tone, typos, multi-step requests, or low-frequency patterns that real customers actually submit. Seeded from mid-frequency patterns' `common_phrases`. | 6 |
+| `edge` | boundary condition: partial action, ambiguous identifier, multi-product, conflicting info, or cross-intent overlap. Seeded from lowest-frequency patterns' `common_phrases` or complex FAQ Q's. | 8 |
 | `escalation` | a branch in `tasks[].branches` whose `outcome: escalates_to_human` — ALF is **expected** to hand off | 4 |
 | `oos` | out-of-scope question; ALF is **expected** to refuse politely | 3 |
 
 `escalation` and `oos` are positive scenarios — passing means ALF correctly
 escalated/refused. Do not treat them as failure cases.
+
+### Mapping patterns to scenario kinds
+
+For each intent, sort its `patterns` by `frequency` descending:
+
+1. **Top ~40% by frequency** → `happy` scenarios. Use FAQ Q's first, then
+   `common_phrases` from these patterns.
+2. **Middle ~35%** → `unhappy` scenarios. Use `common_phrases` from these
+   patterns as `initial_message`. These represent less common but real
+   consultation types (process inquiries, moderate complexity).
+3. **Bottom ~25%** → `edge` scenarios. Use `common_phrases` from these
+   patterns. These are rare but real: partial actions, exceptions, mixed
+   requests.
+
+This is a guideline, not a hard cutoff. Use judgment: a low-frequency pattern
+that is clearly "happy" (e.g. simple info request) can stay `happy`; a
+high-frequency pattern that is inherently complex (e.g. partial cancellation)
+should be `edge`.
+
+**Key principle**: `common_phrases` are verbatim customer utterances. They
+contain real typos, casual tone, and messy phrasing. Use them as-is for
+`initial_message` — this is what makes the QA realistic.
 
 ---
 
@@ -80,11 +120,16 @@ escalated/refused. Do not treat them as failure cases.
 These are the rules the self-verification step (below) checks against.
 **Failing any of these means regenerate, do not ship.**
 
-### Rule 1 — Volume-proportional intent coverage
+### Rule 1 — Volume-proportional intent coverage with difficulty mix
 - For each intent in `canonical.intents`, emit at least
   `max(2, round(volume_weight × target_total))` scenarios.
-- Intents with `volume_weight ≥ 0.10` get ≥ 1 `happy` and ≥ 1 `edge`.
-- Intents with `volume_weight < 0.10` may have only `happy` scenarios.
+- **Difficulty distribution per intent** (when patterns are available):
+  - Intents with `volume_weight ≥ 0.10`: ≥ 1 `happy` + ≥ 1 `unhappy` +
+    ≥ 1 `edge` (if the intent has ≥ 3 distinct patterns).
+  - Intents with `0.05 ≤ volume_weight < 0.10`: ≥ 1 `happy` + ≥ 1 `unhappy`.
+  - Intents with `volume_weight < 0.05`: `happy` only is acceptable.
+- **When patterns are empty** (no patterns matched): fall back to previous
+  behavior — use FAQ Q's for `happy` scenarios, and emit a note.
 - **Empty-FAQ intents** (per canonical `notes`) emit exactly 1 placeholder
   `happy` scenario with `initial_message = canonical.intents[].label`
   used **literally as a statement** (no question rephrasing). E.g. label
@@ -139,13 +184,19 @@ These are the rules the self-verification step (below) checks against.
 ### Rule 5 — initial_message authenticity
 By scenario kind:
 
-- **`happy`**: verbatim Q from `canonical.intents[].faqs`. If none
-  available, verbatim trigger from `canonical.tasks[].triggers` for a task
-  in `intents_linked`. Synthetic only as last resort, with a per-scenario
-  note.
-- **`edge`**: verbatim FAQ Q whose content reflects a non-trivial variation
-  of the intent (multi-item, ambiguity, partial action). If no such FAQ Q
-  exists, use the most complex available FAQ Q for the intent.
+- **`happy`**: verbatim Q from `canonical.intents[].faqs` (preferred), or
+  verbatim `common_phrases` from the intent's highest-frequency patterns.
+  If none available, verbatim trigger from `canonical.tasks[].triggers`
+  for a task in `intents_linked`. Synthetic only as last resort, with a
+  per-scenario note.
+- **`unhappy`**: verbatim `common_phrases` from mid-frequency patterns
+  (preferred). These are real customer utterances with natural messiness.
+  If no suitable phrase exists, use a FAQ Q that reflects a harder variation.
+  Synthetic as last resort, with a note.
+- **`edge`**: verbatim `common_phrases` from low-frequency patterns
+  (preferred) — these capture rare but real boundary cases. If no suitable
+  phrase exists, use a FAQ Q whose content reflects a non-trivial variation
+  (multi-item, ambiguity, partial action). Synthetic as last resort.
 - **`escalation`**: this kind almost never has a matching FAQ Q (FAQs
   capture what ALF *can* answer; escalation triggers are what ALF cannot).
   **Synthetic initial_message is allowed and expected here**, constructed
@@ -156,10 +207,25 @@ By scenario kind:
   '<label>' has no FAQ Q match"`.
 - **`oos`**: per Rule 3 source priority. No FAQ matching required.
 
-**No paraphrasing of FAQ Q's** — when an FAQ Q is the source, copy it
-verbatim including typos, casual tone, and punctuation. Synthetic messages
-(escalation, OOS sources 3, last-resort happy) are allowed only where this
-rule explicitly permits.
+**No paraphrasing of real utterances** — when a FAQ Q or `common_phrases`
+entry is the source, copy it verbatim including typos, casual tone, and
+punctuation. Synthetic messages (escalation, OOS sources 3, last-resort
+happy/unhappy/edge) are allowed only where this rule explicitly permits.
+When using `common_phrases`, record the source pattern name in
+`generation_note`: `"<scenario.id>: common_phrase from pattern '<name>'"`.
+
+### Rule 5a — Difficulty tier annotation
+Every scenario carries a `difficulty_tier` field in its metadata:
+
+| Tier | Meaning |
+|---|---|
+| `happy` | Common path, clean phrasing, single action |
+| `unhappy` | Realistic messiness: vague, emotional, process-heavy |
+| `edge` | Boundary condition: partial action, ambiguity, cross-intent |
+
+This is always identical to the scenario `kind` for `happy`/`unhappy`/`edge`.
+For `escalation` and `oos`, set `difficulty_tier` to `happy` (they test a
+specific mechanism, not difficulty).
 
 ### Rule 6 — Success criteria authoring
 - Each scenario has 1-3 `success_criteria`. More is brittle, fewer is
@@ -178,6 +244,13 @@ rule explicitly permits.
     {"type": "task_called", "args": {"task_id": "<id>",
      "expected_signals": ["<phrase 1>", "<phrase 2>"]}}
     ```
+- For `unhappy`: criteria should reflect the realistic challenge:
+  - If the pattern is `프로세스_문의`: criterion tests whether ALF
+    correctly guides the process (e.g. "반품 수거 요청 방법을 안내한다").
+  - If the pattern involves emotional/vague phrasing: criterion tests
+    whether ALF correctly identifies the intent despite messy input.
+  - At least one criterion must be strictly content-based (not just
+    "ALF가 응답한다").
 - For `edge`: criteria reflect the harder ask (e.g. "다중 주문 중 일부만
   환불 가능함을 안내한다").
 - For `escalation`: criterion is `"상담사 연결 안내가 명시적으로 이루어진다"`
@@ -231,6 +304,8 @@ fails, regenerate that section, do not ship a partial set.
       Coverage rules (Rule 1, 2) take precedence over hitting target_total
       exactly — going over is acceptable; going under is not.
 - [ ] Every intent in canonical has ≥ its required count (Rule 1).
+- [ ] Intents with `volume_weight ≥ 0.10` have ≥ 1 happy + ≥ 1 unhappy +
+      ≥ 1 edge (when patterns available) (Rule 1).
 - [ ] Every task with non-empty triggers has ≥ 1 happy + N escalation
       scenarios (Rule 2).
 - [ ] OOS share is 10-20% of total (Rule 3).
@@ -245,9 +320,13 @@ fails, regenerate that section, do not ship a partial set.
 - [ ] All `max_turns` ∈ [3, 12] (Rule 9).
 - [ ] No success_criterion has empty `description`.
 - [ ] No persona_ref outside the five-archetype pool.
+- [ ] Every scenario has a valid `difficulty_tier` (`happy`/`unhappy`/`edge`).
+- [ ] Every scenario with `source_pattern` has a matching pattern name in
+      its intent's `patterns` list.
 
 Emit a one-line coverage summary into `generation_note`, e.g.:
-`"prompt v0; intents=11/11 covered; tasks=7/7 covered; oos=4/25 (16%);
+`"prompt v1; intents=11/11 covered; tasks=7/7 covered; oos=4/25 (16%);
+difficulty happy=40% unhappy=28% edge=16% esc=0% oos=16%;
 personas polite=36% vague=24% imp=14% conf=16% adv=10%"`.
 
 ---
@@ -278,7 +357,9 @@ escalates_to_human):
       ],
       "max_turns": 6,
       "weight": 0.05,
-      "source": "sop-agent"
+      "difficulty_tier": "happy",
+      "source": "sop-agent",
+      "source_pattern": null
     },
     {
       "id": "order_cancel_return.happy.2",
@@ -299,13 +380,33 @@ escalates_to_human):
       ],
       "max_turns": 6,
       "weight": 0.05,
-      "source": "sop-agent"
+      "difficulty_tier": "happy",
+      "source": "sop-agent",
+      "source_pattern": null
+    },
+    {
+      "id": "order_cancel_return.unhappy.1",
+      "intent": "주문 취소 및 반품",
+      "persona_ref": "vague",
+      "initial_message": "택배 회수접수 해주실수있을까요?",
+      "success_criteria": [
+        {
+          "description": "반품 수거 접수를 위한 주문번호 확인 절차를 안내한다",
+          "type": "llm_judge",
+          "args": {}
+        }
+      ],
+      "max_turns": 6,
+      "weight": 0.05,
+      "difficulty_tier": "unhappy",
+      "source": "sop-agent",
+      "source_pattern": "반품 수거 요청"
     },
     {
       "id": "order_cancel_return.edge.1",
       "intent": "주문 취소 및 반품",
       "persona_ref": "impatient",
-      "initial_message": "셋다 반품을 걸어버렸는데 하나만 반품취소 해주실 수 있나요?",
+      "initial_message": "셋다 반품을 걸어버렸어요 하나만 반품취소 해주세요",
       "success_criteria": [
         {
           "description": "특정 주문 항목만 취소 가능함을 정확히 안내한다",
@@ -315,7 +416,9 @@ escalates_to_human):
       ],
       "max_turns": 8,
       "weight": 0.05,
-      "source": "sop-agent"
+      "difficulty_tier": "edge",
+      "source": "sop-agent",
+      "source_pattern": "반품 부분 취소/철회"
     },
     {
       "id": "order_cancel_return.escalation.사유_불량",
@@ -331,7 +434,9 @@ escalates_to_human):
       ],
       "max_turns": 4,
       "weight": 0.05,
-      "source": "sop-agent"
+      "difficulty_tier": "happy",
+      "source": "sop-agent",
+      "source_pattern": null
     }
   ],
   "generated_at": "2026-04-13T07:35:00+00:00",
@@ -370,7 +475,8 @@ Document any non-trivial trade-off in `generation_note`.
 
 - **Coverage theater**: hitting target_total but skewing to one intent.
   Rule 1 prevents this; verify before shipping.
-- **Easy-mode bias**: only `polite_clear` personas. Rule 4 prevents this.
+- **Easy-mode bias**: only `polite_clear` personas or only `happy`
+  scenarios. Rule 1's difficulty mix + Rule 4 prevent this.
 - **Synthetic FAQ**: paraphrasing FAQ Q's into "cleaner" customer language.
   This produces unrealistic transcripts. Rule 5 forbids.
 - **Trivial criteria**: success_criteria like `"ALF가 응답한다"`.

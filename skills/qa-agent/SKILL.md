@@ -1,6 +1,6 @@
 ---
 name: qa-agent
-description: Generate QA scenarios from sop-agent analysis + current channel settings, drive turn-by-turn dialogue with ALF on a test channel, and persist v0-schema run artifacts (config_snapshot.json, scenarios.json, transcripts.jsonl) under storage/runs/<run_id>/ for downstream scoring.
+description: End-to-end ALF QA pipeline — sop-agent 분석 → 시나리오 생성 → ALF 테스트 → 채점 → 클라이언트 리포트(md + 슬라이드 HTML) 산출. storage/runs/<run_id>/에 전체 아티팩트 적재.
 ---
 
 # qa-agent — Orchestration Spec
@@ -36,6 +36,7 @@ Out of scope (route to a different tool):
 |---|---|
 | `channel_url` | ask the user; example: `https://vqnol.channel.io` |
 | `sop_results_dir` | ask the user; example: `~/sop-agent/results/<client>/` |
+| `is_competitor_bot` | ask: "현재 경쟁사 봇(GL 등)이 작동 중인 고객사인가요?" — 경쟁사 비교 리포트 여부 결정 |
 | `alf_task_json_path` | optional; ask "ALF 태스크 JSON 있으세요?" — if not, fallback to `<sop_results_dir>/04_tasks/*.md` |
 | `target_total` | optional; default **25** |
 | `headed` | optional; default **false** (headless). Use `true` only for debugging. |
@@ -54,7 +55,11 @@ storage/runs/<run_id>/
 ├── canonical_input.yaml      # phase 1 output (kept for replay)
 ├── config_snapshot.json      # phase 2.1 output
 ├── scenarios.json            # phase 2.2 output (matches v0 ScenarioSet)
-└── transcripts.jsonl         # phase 3 output, one line per scenario
+├── transcripts.jsonl         # phase 3 output, one line per scenario
+├── scores.json               # phase 5 output (scoring_agent)
+├── report.md                 # phase 5 output (내부 상세 리포트)
+├── report_client.md          # phase 6 output (클라이언트 비즈니스 리포트)
+└── report_slides.html        # phase 6 output (슬라이드 발표 자료)
 ```
 
 Where `<run_id>` comes from `tools.result_store.new_run_id()`.
@@ -62,14 +67,14 @@ Where `<run_id>` comes from `tools.result_store.new_run_id()`.
 After completion, return to the user:
 - The run_id
 - The output directory path
-- A 3-line summary (count of scenarios executed, average turns, distribution
-  of `terminated_reason`)
+- 핵심 수치 요약 (커버리지, 관여율, 해결률, 경쟁사 대비 배수)
+- `report_slides.html` 경로 (브라우저에서 바로 열 수 있음)
 
 ---
 
 ## Implementation status
 
-All four phases are implementable today.
+All six phases are implementable today.
 
 | Phase | Implementation |
 |---|---|
@@ -77,6 +82,8 @@ All four phases are implementable today.
 | 2. Snapshot + generate | apply `prompts/generate_scenarios.md`, write via `tools.result_store` |
 | 3. Execute | invoke `tools.scenario_runner` (Anthropic SDK + PlaywrightDriver) |
 | 4. Summarize | read via `tools.result_store.read_transcripts` |
+| 5. Score | invoke `tools.scoring_agent` → scores.json + report.md |
+| 6. Client report | apply `prompts/generate_client_report.md` → report_client.md + report_slides.html |
 
 For an interactive single-conversation sanity check (no persona automation,
 human plays customer), use `tools.cli --record --run-id <run_id>` instead.
@@ -135,6 +142,7 @@ ConfigSnapshot(
     sop_result_ref=str(sop_results_dir),
     extra={
         "client_name": canonical["client"]["name"],
+        "is_competitor_bot": is_competitor_bot,
         "alf_task_json": alf_task_json_path,
         "target_total": target_total,
         "rules_source_gap": "v0: rule extraction not implemented; rules_summary intentionally empty",
@@ -286,8 +294,92 @@ After all scenarios complete:
 3. Tell the user the next step: "scoring-agent을 돌리려면 run_id
    `<run_id>`를 사용하세요" (scoring-agent is a separate skill).
 
-Do **not** attempt to score in this skill. Phases 1-4 produce raw
-artifacts only.
+### Phase 5 — Score
+
+**Reads**: `scenarios.json`, `transcripts.jsonl`, `config_snapshot.json`
+**Writes**: `scores.json`, `report.md`
+**Tool**: `tools.scoring_agent`
+
+Steps:
+1. Ensure `config_snapshot.json`에 아래 필드가 있는지 확인:
+   - `extra.total_records` — sop-agent pipeline_summary 또는 patterns.json에서 추출
+   - `extra.intent_pattern_coverage` — 각 intent의 패턴별 볼륨 가중 커버리지 비율
+   
+   이 필드들이 없으면 직접 산출하여 config_snapshot에 추가:
+   
+   ```
+   intent_pattern_coverage 산출 방법:
+   1. patterns.json에서 각 클러스터의 패턴 frequency × cluster_size = projected volume
+   2. 클러스터를 canonical intent에 매핑
+   3. 각 intent 내에서: 시나리오가 커버하는 패턴의 projected volume 합 / 전체 projected volume 합
+   ```
+
+2. Invoke scoring_agent:
+   ```bash
+   uv run python -m tools.scoring_agent --run-id <run_id>
+   ```
+
+3. 산출물 확인:
+   - `scores.json` — per-scenario 판정 + run-level aggregate
+   - `report.md` — 내부 상세 리포트 (시나리오별 criterion pass/fail)
+
+4. 핵심 수치를 사용자에게 보고:
+   - 커버리지, 관여율, 해결률
+   - failure_mode 분포
+   - 난이도별 해결률
+
+### Phase 6 — Client report
+
+**Reads**: Phase 5 산출물 + sop-agent implementation guide
+**Writes**: `report_client.md`, `report_slides.html`
+**Prompt**: `prompts/generate_client_report.md`
+
+Steps:
+1. 경쟁사 봇 baseline 산출 (`is_competitor_bot=true`인 경우):
+
+   **1차 소스**: `<sop_results_dir>/*_alf_implementation_guide.md`가 있으면
+   여기서 경쟁사 봇 이름, 실질 해결률, 사전 예측치 추출.
+   
+   **2차 소스 (implementation guide 없을 때)**: sop-agent 데이터에서 직접 산출.
+   경쟁사 봇(GL 등)은 상담 데이터에 "일반 봇 자동응답"으로 나타남:
+   
+   ```
+   경쟁사 봇 baseline 산출 방법:
+   
+   a. patterns.json → response_flow 확인 (e.g. "bot(자동응답) → manager")
+      → "bot" 단계가 존재하면 경쟁사 봇 작동 중으로 판단
+   
+   b. 클러스터 중 category="CS_자동응답" 또는 label에 "담당자 연결 대기",
+      "자동응답" 포함된 클러스터 = 봇이 해결 못하고 상담사로 넘긴 건
+   
+   c. 경쟁사 봇 해결률 추정:
+      - 전체 상담 중 봇이 "실질적으로 해결"한 비율
+      - 일반적으로 GL 같은 rule-based 봇은 단순 FAQ 매칭만 수행
+      - 추정 공식: (CS_자동응답 클러스터 중 봇이 최종 응답한 건수)
+                   / 전체 상담 건수
+      - 보수적 추정: 대부분 10~15% 범위 (봇이 인사 + 라우팅만 하고
+        실질 해결은 거의 못 함)
+   
+   d. pipeline_summary.md에서 월간 추정 건수 추출
+   ```
+   
+   `is_competitor_bot=false`면: 경쟁사 비교 섹션 전체 생략.
+   "신규 ALF 도입" 프레이밍으로 리포트 작성 (×N배 대신 절대 수치 중심).
+
+2. `prompts/generate_client_report.md`를 따라 report_client.md 생성:
+   - 경쟁사 대비 비교 (×N배) — 첫 번째로 보이는 수치
+   - 현재 처리 영역 + 실제 대화 사례
+   - 개선 포인트 (rag_miss 기반)
+   - Phase별 로드맵 + 예측 수치
+   - 모든 % 수치는 월간 건수로도 환산
+
+3. report_slides.html 생성:
+   - 다크 테마, 10장 슬라이드, 좌우 화살표 네비게이션
+   - `prompts/generate_client_report.md`의 "슬라이드 구조" 섹션 준수
+   - 대화 예시: transcripts.jsonl에서 unhappy + completed + resolved 시나리오 1건 발췌
+   - "ALF 도입 즉시" 표현 사용 (not "ALF 현재")
+
+4. 사용자에게 report_slides.html 경로 안내 (브라우저에서 바로 열기).
 
 ---
 
@@ -373,7 +465,6 @@ settings" — preserves Rule-7 (scenario ID stability) and Rule-3
 
 ## What this skill does **not** do
 
-- Does not score or label transcripts. That is `scoring-agent`.
 - Does not generate sop-agent results. That is `sop-agent` (external repo).
 - Does not modify the ALF channel settings. Read-only consumer.
 - Does not run scenarios in parallel. v0 is sequential — parallelism is a
@@ -381,6 +472,7 @@ settings" — preserves Rule-7 (scenario ID stability) and Rule-3
   driver supports it, but the orchestrator does not exploit it yet).
 - Does not delete or overwrite previous runs. Each run gets its own
   `run_id` directory.
+- Does not fabricate or inflate client report 수치 — scores.json 실측 기반만 사용.
 
 ---
 
@@ -418,5 +510,7 @@ Model defaults to `anthropic/claude-sonnet-4-6`; override via `PERSONA_MODEL`.
 | `tools.chat_driver.PlaywrightDriver` | open / send / wait_reply / close |
 | `tools.chat_driver.AlfMessage` | shape of ALF message returned by driver |
 | `tools.scenario_runner` (CLI) | Phase 3 execution; invoke as subprocess |
+| `tools.scoring_agent` (CLI) | Phase 5 scoring; invoke as subprocess |
+| `prompts/generate_client_report.md` | Phase 6 client report generation instructions |
 
 All other tools live outside this skill. Do not invent new tool calls.

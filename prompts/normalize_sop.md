@@ -65,6 +65,11 @@ intents:                            # ONE entry per SOP topic in metadata.json
     faqs:                           # from faq.json[faq_by_topic][<MATCHING_KEY>], may be []
       - q: <string>                 # verbatim
         a: <string>                 # verbatim
+    patterns:                       # from patterns.json clusters matched to this intent
+      - name: <string>              # pattern name, e.g. "재입고 일정 문의"
+        type: <string>              # 정보_요청 | 프로세스_문의 | 문제_신고
+        frequency: <int>            # sample frequency from extraction (relative within cluster)
+        common_phrases: [<string>]  # verbatim customer utterances — scenario seed candidates
     escalation_triggers: [<string>] # from response_strategies[topic].escalation_triggers, may be []
     automation_opportunity: <string> # from response_strategies[topic].automation_opportunity, may be ""
     key_info: [<string>]            # from response_strategies[topic].key_info, may be []
@@ -153,6 +158,22 @@ generation_metadata:
   Scenario generation will treat empty-FAQ intents as low-confidence.
 - **Never paraphrase Q/A.** Customer utterances are scenario seeds and must
   preserve original phrasing, typos, casual tone, and formatting.
+
+### `intents[].patterns` (from patterns.json clusters)
+- **Matching logic**: each cluster in `patterns.json.clusters` maps to an
+  intent. Use the same key-matching strategy as FAQ: cluster `category` +
+  `label` → intent `id` / `label`. Multiple clusters can map to one intent
+  (e.g. "데님 팬츠 문의" and "재입고 문의" both map to the same intent if the
+  SOP groups them). Merge patterns from all matched clusters.
+- **Fields**: copy each pattern's `name`, `type`, `frequency`, and
+  `common_phrases` verbatim. Do not paraphrase `common_phrases` — they are
+  real customer utterances and serve as scenario seeds.
+- **Ordering**: sort patterns by `frequency` descending within each intent.
+- **Missing clusters**: if no cluster matches an intent, set `patterns: []`
+  and add a note.
+- **Noise clusters** (listed in `patterns.json.metadata.noise_clusters`):
+  skip entirely — they do not map to intents. Their content feeds
+  `out_of_scope_hints` instead.
 
 ### `intents[].escalation_triggers`
 - Copy verbatim from
@@ -353,6 +374,24 @@ intents:
     faqs:
       - q: "반품하고 싶어요"
         a: "반품 신청 도와드리겠습니다. 주문번호 알려주세요."
+    patterns:
+      - name: 반품 진행 상태 확인
+        type: 프로세스_문의
+        frequency: 6
+        common_phrases:
+          - "반품완료 언제 되나요?"
+          - "환불처리 되나요?"
+      - name: 반품 수거 요청
+        type: 프로세스_문의
+        frequency: 5
+        common_phrases:
+          - "택배 회수접수 해주실수있을까요?"
+          - "반품 회수가 안되어 재요청"
+      - name: 반품 부분 취소/철회
+        type: 프로세스_문의
+        frequency: 3
+        common_phrases:
+          - "셋다 반품을 걸어버렸어요 하나만 반품취소 해주세요"
     escalation_triggers:
       - "불량 사유로 반품 요청"
     automation_opportunity: "주문번호 기반 반품 API 연동"

@@ -112,7 +112,9 @@ class Scenario:
     success_criteria: list[SuccessCriterion]
     max_turns: int = 8
     weight: float = 1.0  # traffic-weight hint for aggregation
+    difficulty_tier: str = "happy"  # "happy" | "unhappy" | "edge"
     source: str = ""  # "sop-agent", "manual", "interactive", ...
+    source_pattern: Optional[str] = None  # pattern name if seeded from common_phrases
 
 
 @dataclass
@@ -222,6 +224,145 @@ def read_scenarios(run_id: str, *, root: Path = DEFAULT_STORAGE_ROOT) -> Scenari
         scenarios=scenarios,
         generated_at=data["generated_at"],
         generation_note=data.get("generation_note", ""),
+    )
+
+
+# ---- Scoring records -------------------------------------------------------
+
+
+# Allowed failure_mode values. `none` = scenario resolved; `persona_drift` =
+# persona went out of scope (run-validity issue, excluded from rate math).
+FailureMode = Literal[
+    "none",
+    "rag_miss",  # ALF answered but not what the intent asked for
+    "escalation_only",  # ALF immediately handed off without substantive attempt
+    "task_not_triggered",  # intent required a task/action that ALF didn't invoke
+    "drift",  # ALF response drifted to unrelated topic
+    "persona_drift",  # persona introduced new topics outside scenario — run validity issue
+    "timeout",
+    "error",
+]
+
+
+@dataclass
+class CriterionResult:
+    """Per-success_criterion pass/fail from the judge."""
+
+    description: str
+    passed: bool
+    reason: str = ""
+
+
+@dataclass
+class ScenarioScore:
+    """Judge verdict + rule-based annotations for one scenario execution."""
+
+    scenario_id: str
+    intent: str
+    persona_ref: str
+    weight: float
+    terminated_reason: TerminationReason
+    engaged: bool
+    resolved: bool
+    refused: Optional[bool]  # OOS-only; None for non-OOS
+    failure_mode: str  # one of FailureMode
+    criterion_results: list[CriterionResult]
+    notes: str = ""
+    excluded_from_rate: bool = False  # true when persona_drift invalidated the run
+    judge_latency_s: Optional[float] = None
+
+
+@dataclass
+class RunAggregate:
+    """Run-level metrics derived from ScenarioScore list + config context.
+
+    Three-tier metric model (Eren 2026-04-14 definition):
+
+      engagement_rate (관여율)
+        = Σ(covered intent weight) / (1 - noise_rate)
+        Input-side: how much of real consultation volume the scenario set
+        represents. Determined at scenario generation time, NOT by ALF behavior.
+
+      resolution_rate (해결률)
+        = Σ(w · resolved) / Σ(w · engaged)   among non-OOS, non-excluded
+        Output-side: of the scenarios ALF engaged with, how many did it
+        resolve (including correct escalation as resolution).
+
+      coverage (커버리지)
+        = engagement_rate × resolution_rate
+        The final business metric: fraction of real consultations ALF can
+        meaningfully handle.
+
+    `scenario_weight_sum` = Σ(weight) over non-OOS, non-excluded scenarios.
+    This is used for weight sanity checks. When scenario_weight_sum < 0.9,
+    the report warns that intent coverage is incomplete.
+    """
+
+    # Input-side
+    engagement_rate: float  # sop-agent data basis (관여율)
+    noise_rate: float  # noise consultations / total
+    scenario_weight_sum: float  # Σw of non-OOS, non-excluded scenarios
+
+    # Output-side
+    resolution_rate: float  # (해결률)
+    scenario_engagement_rate: float  # legacy: per-scenario ALF engagement
+
+    # Combined
+    coverage: float  # engagement_rate × resolution_rate (커버리지)
+
+    # OOS
+    oos_count: int
+    oos_refusal_rate: Optional[float]
+
+    # Breakdown
+    excluded_count: int
+    by_intent: list[dict[str, Any]]
+    by_difficulty: dict[str, dict[str, Any]]  # happy/unhappy/edge breakdown
+    failure_mode_dist: dict[str, int]
+
+
+@dataclass
+class RunScore:
+    """Top-level scored artifact. One per run."""
+
+    schema_version: str
+    run_id: str
+    scored_at: str
+    judge_model: str
+    judge_prompt_version: str
+    scores: list[ScenarioScore]
+    aggregate: RunAggregate
+
+
+def write_scores(run_id: str, run_score: RunScore, *, root: Path = DEFAULT_STORAGE_ROOT) -> Path:
+    path = run_dir(run_id, root) / "scores.json"
+    path.write_text(
+        json.dumps(asdict(run_score), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
+def read_scores(run_id: str, *, root: Path = DEFAULT_STORAGE_ROOT) -> RunScore:
+    path = run_dir(run_id, root) / "scores.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    scores = [
+        ScenarioScore(
+            **{
+                **s,
+                "criterion_results": [CriterionResult(**c) for c in s.get("criterion_results", [])],
+            }
+        )
+        for s in data["scores"]
+    ]
+    return RunScore(
+        schema_version=data["schema_version"],
+        run_id=data["run_id"],
+        scored_at=data["scored_at"],
+        judge_model=data["judge_model"],
+        judge_prompt_version=data["judge_prompt_version"],
+        scores=scores,
+        aggregate=RunAggregate(**data["aggregate"]),
     )
 
 
