@@ -47,6 +47,33 @@ SEL_ALF_MESSAGE_TEXT = '[class*="DeskMessagestyled__Wrapper"] div[id^="node-"]'
 # Typing indicator wrapper — empty when idle, populated while ALF is composing.
 SEL_TYPING_WRAPPER = '[class*="MessageStreamstyled__Typing"]'
 
+# Bot form input fields — appear when bot workflow requests structured input
+# (email, phone, name, etc.) instead of a free-text chat message.
+# These are rendered inside the message stream, NOT in the footer textarea.
+BOT_FORM_INPUT_CANDIDATES: tuple[str, ...] = (
+    '[data-ch-testid="form-input"] input',
+    '[data-ch-testid="bot-form-input"] input',
+    '[class*="FormInput"] input',
+    '[class*="UserFormMessage"] input',
+    '[class*="FormMessage"] input[type="email"]',
+    '[class*="FormMessage"] input[type="tel"]',
+    '[class*="FormMessage"] input[type="text"]',
+    'input[type="email"][placeholder]',
+    'input[type="tel"][placeholder]',
+    # Generic: any visible input inside the message log that is NOT the footer
+    'section[role="log"] input:not([type="hidden"])',
+)
+BOT_FORM_SUBMIT_CANDIDATES: tuple[str, ...] = (
+    '[data-ch-testid="form-submit-button"]',
+    '[class*="FormMessage"] button[type="submit"]',
+    '[class*="UserFormMessage"] button',
+    '[class*="FormInput"] button',
+    'section[role="log"] button:has-text("제출")',
+    'section[role="log"] button:has-text("확인")',
+    'section[role="log"] button:has-text("submit")',
+    'section[role="log"] form button',
+)
+
 # Contact / "문의하기" entry button on the landing page.
 CONTACT_BUTTON_CANDIDATES: tuple[str, ...] = (
     "text=문의하기",
@@ -282,6 +309,55 @@ class PlaywrightDriver(ChatDriver):
     async def _collect_new_alf_messages(self) -> list[AlfMessage]:
         all_msgs = await self._collect_all_alf_messages()
         return [m for m in all_msgs if m.node_id not in self._seen_node_ids]
+
+    async def detect_form_input(self) -> bool:
+        """Return True if a bot form input field is currently visible."""
+        page = self._require_page()
+        for sel in BOT_FORM_INPUT_CANDIDATES:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible(timeout=500):
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
+
+    async def fill_form_input(self, value: str) -> bool:
+        """Fill a visible bot form input and submit it.
+
+        Returns True if a form was found and submitted, False otherwise.
+        """
+        page = self._require_page()
+
+        # Find and fill the input
+        filled = False
+        for sel in BOT_FORM_INPUT_CANDIDATES:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible(timeout=500):
+                    await loc.click()
+                    await loc.fill(value)
+                    filled = True
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+
+        if not filled:
+            return False
+
+        # Try submit button first, fall back to Enter key
+        for sel in BOT_FORM_SUBMIT_CANDIDATES:
+            try:
+                btn = page.locator(sel).first
+                if await btn.count() > 0 and await btn.is_visible(timeout=1_000):
+                    await btn.click()
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+
+        # No submit button found — try Enter
+        await page.keyboard.press("Enter")
+        return True
 
     async def _typing_idle(self) -> bool:
         """Return True iff the typing indicator wrapper has no child content."""

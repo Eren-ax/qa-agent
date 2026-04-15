@@ -81,6 +81,13 @@ CLOSER_TOKENS = (
 )
 CLOSER_MAX_LEN = 30
 
+# Fake values for bot form inputs (email, phone, etc.)
+FORM_FAKE_VALUES = {
+    "email": "testuser@example.com",
+    "tel": "010-9876-5432",
+    "text": "테스트",
+}
+
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -175,6 +182,85 @@ async def generate_persona_message(client: AsyncAnthropic, *, system_prompt: str
     return "".join(parts)
 
 
+async def _detect_form_input_type(driver: PlaywrightDriver) -> str:
+    """Sniff the visible form input to determine what kind of value it expects.
+
+    Checks (in order): input[type], placeholder text, surrounding label text.
+    Returns one of: "email", "tel", "text".
+    """
+    page = driver._require_page()  # noqa: SLF001
+    from tools.chat_driver import BOT_FORM_INPUT_CANDIDATES
+
+    for sel in BOT_FORM_INPUT_CANDIDATES:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() == 0 or not await loc.is_visible(timeout=300):
+                continue
+
+            # 1. Check type attribute
+            input_type = (await loc.get_attribute("type") or "").lower()
+            if input_type in ("email", "tel"):
+                return input_type
+
+            # 2. Check placeholder text
+            placeholder = (await loc.get_attribute("placeholder") or "").lower()
+            if any(kw in placeholder for kw in ("email", "이메일", "메일", "@")):
+                return "email"
+            if any(kw in placeholder for kw in ("phone", "전화", "연락처", "핸드폰", "휴대폰", "010")):
+                return "tel"
+
+            # 3. Check aria-label
+            aria = (await loc.get_attribute("aria-label") or "").lower()
+            if any(kw in aria for kw in ("email", "이메일", "메일")):
+                return "email"
+            if any(kw in aria for kw in ("phone", "전화", "연락처")):
+                return "tel"
+
+            # 4. Check surrounding label / parent text
+            try:
+                parent_text = await page.locator(f"{sel}/..").first.inner_text(timeout=500)
+                parent_lower = parent_text.lower()
+                if any(kw in parent_lower for kw in ("email", "이메일", "메일")):
+                    return "email"
+                if any(kw in parent_lower for kw in ("phone", "전화", "연락처")):
+                    return "tel"
+            except Exception:  # noqa: BLE001
+                pass
+
+            return "text"
+        except Exception:  # noqa: BLE001
+            continue
+    return "text"
+
+
+async def _handle_form_if_present(
+    driver: PlaywrightDriver,
+    notes_extras: list[str],
+    max_attempts: int = 3,
+) -> bool:
+    """Detect and fill bot form inputs (email, phone, etc.).
+
+    When ALF triggers a bot workflow that presents a structured form field,
+    the driver must fill that field instead of the chat textarea.  Returns
+    True if any form was handled.
+    """
+    handled_any = False
+    for attempt in range(max_attempts):
+        if not await driver.detect_form_input():
+            break
+        input_type = await _detect_form_input_type(driver)
+        value = FORM_FAKE_VALUES[input_type]
+
+        ok = await driver.fill_form_input(value)
+        if ok:
+            notes_extras.append(f"bot form filled (attempt {attempt + 1}, type={input_type}): {value}")
+            handled_any = True
+            await asyncio.sleep(1.5)  # wait for bot to process
+        else:
+            break
+    return handled_any
+
+
 def _finalize(
     scenario: Scenario,
     run_id: str,
@@ -228,6 +314,9 @@ async def run_one_scenario(
         for w in welcome:
             history.append(HistoryEntry(role="alf", text=w.text))
 
+        # Handle any bot form that appears before first message (e.g. email collection).
+        await _handle_form_if_present(driver, notes_extras)
+
         # Turn 0: send initial_message verbatim, no persona inference.
         user_ts = time.time()
         await driver.send(scenario.initial_message)
@@ -253,6 +342,15 @@ async def run_one_scenario(
                 welcome_count,
                 notes_extras,
             )
+
+        # Handle bot form if it appeared after ALF's reply (e.g. email/phone collection).
+        if await _handle_form_if_present(driver, notes_extras):
+            # After filling form, wait for the next ALF reply.
+            try:
+                form_replies = await driver.wait_reply(timeout=timeout)
+                replies.extend(form_replies)
+            except TimeoutError:
+                pass  # proceed with what we have
 
         history.append(HistoryEntry(role="user", text=scenario.initial_message))
         for r in replies:
@@ -357,6 +455,14 @@ async def run_one_scenario(
                     )
                 )
                 break
+
+            # Handle bot form if it appeared after ALF's reply.
+            if await _handle_form_if_present(driver, notes_extras):
+                try:
+                    form_replies = await driver.wait_reply(timeout=timeout)
+                    replies.extend(form_replies)
+                except TimeoutError:
+                    pass
 
             history.append(HistoryEntry(role="user", text=cleaned))
             for r in replies:
