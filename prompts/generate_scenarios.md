@@ -19,6 +19,7 @@ consequential prompt in qa-agent.
 | `canonical` | YAML output of `prompts/normalize_sop.md` |
 | `personas` | the fixed pool from `prompts/persona_archetypes.md` |
 | `target_total` | integer; total scenario count target (default: 25) |
+| `gl_bot_context` | (optional) GL bot analysis from sop-agent `patterns.json → metadata.analysis_context`. When present, enables Gap 1 (GL baseline tagging) and informs Gap 2 (phase assignment). |
 
 ### New in v1: `canonical.intents[].patterns`
 
@@ -64,7 +65,13 @@ A JSON document matching the `ScenarioSet` shape used by
       "weight": <float>,
       "difficulty_tier": "happy | unhappy | edge",
       "source": "sop-agent | manual | oos",
-      "source_pattern": "<pattern name, if seeded from common_phrases>"
+      "source_pattern": "<pattern name, if seeded from common_phrases>",
+      "phase": "rag | task | hybrid | human",
+      "gl_bot_baseline": {
+        "can_handle": <bool>,
+        "gl_behavior": "<what GL bot does for this scenario type>",
+        "gl_resolution": <float 0.0-1.0>
+      }
     }
   ],
   "generated_at": "<ISO8601 UTC>",
@@ -293,6 +300,76 @@ specific mechanism, not difficulty).
 - Override only when an FAQ Q clearly implies multi-step (e.g. exchange
   scenarios may need +2 turns). Cap at 12. Never go below 3.
 
+### Rule 10 — Phase assignment (Gap 2)
+Every scenario carries a `phase` field. This is the **design-time** phase
+assignment (方案A); scoring_agent will also tag `task_called_actual` post-run
+for cross-validation (方案C).
+
+| `phase` | When to assign |
+|---|---|
+| `rag` | Resolution requires only RAG knowledge + rules. No API/task call needed. Includes FAQ, information inquiries, policy explanations. |
+| `task` | Resolution requires a task (API call). Check `canonical.tasks[].intents_linked` — if the scenario's intent is linked and the scenario asks for an action the task performs (e.g. order lookup, cancel, return), assign `task`. |
+| `hybrid` | Scenario needs both RAG knowledge AND a task call. E.g. "환불 규정 알려주고 반품 접수도 해줘" — info + action in one request. |
+| `human` | Scenario is expected to escalate to human. Assign to `escalation` kind scenarios. |
+
+**Source for phase assignment**:
+- **Primary source**: `canonical.intents[].phase_hint` (from automation_analysis.md, normalized by normalize_sop.md).
+  - When `phase_hint` is present and non-null, use it as the default for all scenarios in that intent.
+  - For `escalation` kind scenarios, override to `"human"` regardless of phase_hint.
+  - For `oos` kind scenarios, override to `"rag"` regardless of phase_hint.
+- **Fallback** (when `phase_hint` is null):
+  - Check `canonical.tasks[].intents_linked` to see if this intent maps to any task.
+  - `happy`/`unhappy`/`edge` scenarios for intents NOT in any task's `intents_linked` → `rag`
+  - `happy`/`unhappy`/`edge` scenarios for intents IN a task's `intents_linked` → `task`
+  - `escalation` scenarios → `human`
+  - `oos` scenarios → `rag`
+- **Hybrid detection**: If scenario's `initial_message` clearly requests both info AND action
+  (e.g. "환불 규정 알려주고 반품 접수도 해줘"), override to `"hybrid"` even if phase_hint says `"rag"` or `"task"`.
+
+**Aggregation semantics**:
+- Phase 1 score = scenarios where `phase ∈ {rag}` (즉시 도입 효과)
+- Phase 2 score = all scenarios (Task + Hybrid 포함, 추가 세팅 후 효과)
+- This is computed by scoring_agent, not by this prompt.
+
+### Rule 11 — GL bot baseline tagging (Gap 1)
+When `gl_bot_context` input is provided (i.e. `is_competitor_bot=true`),
+every non-OOS scenario must carry a `gl_bot_baseline` object:
+
+```json
+{
+  "can_handle": false,
+  "gl_behavior": "에스컬레이션 (주문조회 Read만 간헐 수행, 취소 Write 0건)",
+  "gl_resolution": 0.0
+}
+```
+
+**How to determine `gl_bot_baseline` per scenario**:
+
+1. **Read Task scenarios** (intent involves lookup/조회):
+   - Check `gl_bot_context.gl_bot_read_task_execution`.
+   - If GL bot performs this specific read → `can_handle: true`,
+     `gl_resolution` = approximate success rate from the data (e.g.
+     24/1864 = 0.013 for order lookup).
+   - If GL bot does not perform this read → `can_handle: false`,
+     `gl_resolution: 0.0`.
+
+2. **Write Task scenarios** (cancel, return, exchange, etc.):
+   - Check `gl_bot_context.gl_bot_write_task_execution`.
+   - GL bots almost never perform writes → `can_handle: false`,
+     `gl_resolution: 0.0`, `gl_behavior` = relevant excerpt.
+
+3. **RAG-only scenarios** (FAQ, info):
+   - GL bots typically handle greetings + basic FAQ matching.
+   - `can_handle: true` only if the FAQ is a common greeting or
+     extremely basic (e.g. "영업시간"). Otherwise `false`.
+   - `gl_resolution` = `gl_bot_context.gl_bot_real_resolution_rate`
+     parsed as float (e.g. "3.5%" → 0.035) for generic baseline, or
+     0.0 for topics GL clearly cannot handle.
+
+4. **Escalation / OOS scenarios**: `gl_bot_baseline: null` (not applicable).
+
+When `gl_bot_context` is absent: `gl_bot_baseline: null` for all scenarios.
+
 ---
 
 ## Self-verification checklist (run before emitting JSON)
@@ -318,11 +395,20 @@ fails, regenerate that section, do not ship a partial set.
 - [ ] Every `id` follows the format and is globally unique (Rule 7).
 - [ ] Per-intent weights sum to that intent's `volume_weight` (Rule 8).
 - [ ] All `max_turns` ∈ [3, 12] (Rule 9).
+- [ ] All non-OOS scenarios have `phase` assigned (Rule 10).
+- [ ] When `gl_bot_context` is provided, all non-OOS/non-escalation scenarios
+      have `gl_bot_baseline` populated (Rule 11).
 - [ ] No success_criterion has empty `description`.
 - [ ] No persona_ref outside the five-archetype pool.
 - [ ] Every scenario has a valid `difficulty_tier` (`happy`/`unhappy`/`edge`).
 - [ ] Every scenario with `source_pattern` has a matching pattern name in
       its intent's `patterns` list.
+- [ ] Every scenario has a valid `phase` (Rule 10): `rag`, `task`, `hybrid`,
+      or `human`. Escalation scenarios = `human`. OOS = `rag`.
+- [ ] Task-linked intents have at least one `phase: task` scenario (Rule 10).
+- [ ] When `gl_bot_context` is provided: every non-OOS, non-escalation
+      scenario has a `gl_bot_baseline` object (Rule 11). When absent: all
+      `gl_bot_baseline` = null.
 
 Emit a one-line coverage summary into `generation_note`, e.g.:
 `"prompt v1; intents=11/11 covered; tasks=7/7 covered; oos=4/25 (16%);
@@ -359,7 +445,13 @@ escalates_to_human):
       "weight": 0.05,
       "difficulty_tier": "happy",
       "source": "sop-agent",
-      "source_pattern": null
+      "source_pattern": null,
+      "phase": "rag",
+      "gl_bot_baseline": {
+        "can_handle": false,
+        "gl_behavior": "에스컬레이션 (환불 정책 FAQ 매칭 불가)",
+        "gl_resolution": 0.0
+      }
     },
     {
       "id": "order_cancel_return.happy.2",
@@ -382,7 +474,13 @@ escalates_to_human):
       "weight": 0.05,
       "difficulty_tier": "happy",
       "source": "sop-agent",
-      "source_pattern": null
+      "source_pattern": null,
+      "phase": "task",
+      "gl_bot_baseline": {
+        "can_handle": false,
+        "gl_behavior": "에스컬레이션 (반품 Write 0건)",
+        "gl_resolution": 0.0
+      }
     },
     {
       "id": "order_cancel_return.unhappy.1",
@@ -400,7 +498,13 @@ escalates_to_human):
       "weight": 0.05,
       "difficulty_tier": "unhappy",
       "source": "sop-agent",
-      "source_pattern": "반품 수거 요청"
+      "source_pattern": "반품 수거 요청",
+      "phase": "task",
+      "gl_bot_baseline": {
+        "can_handle": false,
+        "gl_behavior": "에스컬레이션 (수거 접수 Write 0건)",
+        "gl_resolution": 0.0
+      }
     },
     {
       "id": "order_cancel_return.edge.1",
@@ -418,7 +522,13 @@ escalates_to_human):
       "weight": 0.05,
       "difficulty_tier": "edge",
       "source": "sop-agent",
-      "source_pattern": "반품 부분 취소/철회"
+      "source_pattern": "반품 부분 취소/철회",
+      "phase": "task",
+      "gl_bot_baseline": {
+        "can_handle": false,
+        "gl_behavior": "에스컬레이션 (부분 반품 Write 0건)",
+        "gl_resolution": 0.0
+      }
     },
     {
       "id": "order_cancel_return.escalation.사유_불량",
@@ -436,7 +546,9 @@ escalates_to_human):
       "weight": 0.05,
       "difficulty_tier": "happy",
       "source": "sop-agent",
-      "source_pattern": null
+      "source_pattern": null,
+      "phase": "human",
+      "gl_bot_baseline": null
     }
   ],
   "generated_at": "2026-04-13T07:35:00+00:00",

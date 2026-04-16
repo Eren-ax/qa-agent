@@ -41,6 +41,14 @@ wow-point를 전달해야 합니다.
 2. **사전 예측치** (있으면): implementation guide → Phase 1/2 예측 수치
 3. **QA 실측치**: scores.json의 `aggregate` → `coverage`, `engagement_rate`,
    `resolution_rate`
+   - **Phase별 분리 수치** (Gap 2): `aggregate.by_phase._phase1_summary` (RAG만)
+     및 `aggregate.by_phase._phase2_summary` (전체). 각각
+     `engagement_rate`, `resolution_rate`, `coverage` 포함.
+   - **GL봇 대비 비교** (Gap 1): `aggregate.gl_baseline_comparison` →
+     `gl_resolution_rate`, `alf_resolution_rate`, `improvement_factor`.
+     `improvement_factor` = "∞" (GL이 0% 해결) 또는 ×N.N배.
+   - **Phase별 상세**: `aggregate.by_phase.rag`, `.task`, `.hybrid`, `.human` →
+     각각 `count`, `weight`, `resolution_rate`.
 4. **월간 상담 건수**: config_snapshot 또는 pipeline_summary에서 추출
    → 커버리지 × 월간 건수 = 월간 자동 처리 건수
 
@@ -62,6 +70,8 @@ wow-point를 전달해야 합니다.
 핵심 프레이밍:
 - "**지금 당장 도입하면** — 추가 작업 없이 ×N배"
 - 사전 예측 X%를 초과 달성 (실측 Y%) (해당되는 경우)
+- **Phase 분리 수치 활용**: Phase 1 coverage를 "즉시 효과", Phase 2를 "추가 세팅 후 효과"로 표기.
+  `aggregate.gl_baseline_comparison.improvement_factor`를 ×N배로 표기.
 
 **신규 도입 고객 (`is_competitor_bot=false`):**
 
@@ -123,18 +133,27 @@ scores.json에서 `failure_mode: rag_miss` 시나리오 추출:
 - pattern_coverage가 낮은 intent (< 0.3) 중심으로 개선
 - 최종 커버리지 목표
 
-### Phase별 수치 예측 방법
+### Phase별 수치: 실측 기반 (Gap 2 by_phase 활용)
+
+scores.json에 `by_phase` 분리 수치가 이미 계산되어 있으므로 **예측이 아닌 실측**
+으로 표기:
 
 ```
-Phase 1 해결률 = (현재 해결률) + (rag_miss 건수 / 전체 engaged 건수) × 보정계수
-  보정계수 = 0.8 (모든 rag_miss가 고쳐지진 않으므로)
-
-Phase 2 관여율 = Σ(intent_weight × 수정된_pattern_coverage) / (1 - noise_rate)
-  수정된_pattern_coverage: task가 활성화되면 해당 intent의 프로세스_문의 패턴이 커버됨
-  → 기존 coverage + (task-related 패턴 freq / total 패턴 freq)
-
-Phase 3: Phase 2 기반 + 낮은 coverage intent 보강
+Phase 1 커버리지 = aggregate.by_phase._phase1_summary.coverage (RAG만 실측)
+Phase 2 커버리지 = aggregate.by_phase._phase2_summary.coverage (전체 실측)
 ```
+
+**Phase 1 → Phase 1+ 예측** (rag_miss 개선 시):
+```
+Phase 1+ 해결률 = Phase 1 해결률 + (rag_miss 건수 / engaged 건수) × 0.8
+```
+
+**Phase 2 → Phase 2+ 예측** (추가 Task 활성화 시):
+- `by_phase.task`의 resolution_rate가 높으면 Task 활성화 효과 높음
+- `by_phase.task`가 없으면 아직 Task 시나리오 미실행 → sop-agent 분석 기반 예측
+
+Phase별 상세 테이블(`by_phase.rag`, `.task`, `.hybrid`)을 Section 4에 포함하여
+"어떤 유형의 상담이 Phase 2에서 추가로 커버되는지" 시각화.
 
 ### Section 5: 전체 로드맵 요약
 

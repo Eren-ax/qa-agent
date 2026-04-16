@@ -35,11 +35,17 @@ Out of scope (route to a different tool):
 | Input | How to obtain |
 |---|---|
 | `channel_url` | ask the user; example: `https://vqnol.channel.io` |
-| `sop_results_dir` | ask the user; example: `~/sop-agent/results/<client>/` |
-| `is_competitor_bot` | ask: "현재 경쟁사 봇(GL 등)이 작동 중인 고객사인가요?" — 경쟁사 비교 리포트 여부 결정 |
-| `alf_task_json_path` | optional; ask "ALF 태스크 JSON 있으세요?" — if not, fallback to `<sop_results_dir>/04_tasks/*.md` |
+| `sop_results_dir` | ask the user; example: `~/sop-agent/results/<client>/` (sop-agent v2 format) |
+| `is_competitor_bot` | ask: "현재 경쟁사 봇(GL 등)이 작동 중인 고객사인가요?" — GL baseline 비교 리포트 생성 여부 결정 |
+| `coverage_mode` | ask: "어떤 범위를 테스트할까요?" — **`rag_only`** (지식만, Task 세팅 전) / `channel_only` (지식+승인노드) / `full` (지식+Task 전체). Default: **`rag_only`** |
+| `alf_task_json_path` | optional; ask "ALF 태스크 JSON 있으세요?" — if present, use `<sop_results_dir>/04_tasks_json/*.json` (v2 primary); fallback to `04_tasks/*.md` |
 | `target_total` | optional; default **25** |
 | `headed` | optional; default **false** (headless). Use `true` only for debugging. |
+
+**sop-agent v2 changes**:
+- Task JSON: `04_tasks_json/*.json` (primary) → `04_tasks/*.md` (fallback)
+- automation_analysis: `05_sales_report/analysis/automation_analysis.md` (moved to subdirectory)
+- response_strategies.json: **removed** (escalation_triggers now in patterns.json)
 
 If any required input is missing or the path doesn't exist, **stop and ask
 the user** before proceeding. Do not invent paths.
@@ -67,7 +73,12 @@ Where `<run_id>` comes from `tools.result_store.new_run_id()`.
 After completion, return to the user:
 - The run_id
 - The output directory path
-- 핵심 수치 요약 (커버리지, 관여율, 해결률, 경쟁사 대비 배수)
+- 핵심 수치 요약:
+  - **Phase 1 (RAG만)**: 즉시 도입 시 커버리지 (rag_only mode)
+  - **Phase 2 (전체)**: Task 연동 후 커버리지 (full mode)
+  - **GL봇 대비 개선**: GL 해결률 vs ALF 해결률 (×N배)
+  - 관여율, 해결률
+- `report.md` 경로 (상세 분석)
 - `report_slides.html` 경로 (브라우저에서 바로 열 수 있음)
 
 ---
@@ -324,7 +335,13 @@ Steps:
    - `report.md` — 내부 상세 리포트 (시나리오별 criterion pass/fail)
 
 4. 핵심 수치를 사용자에게 보고:
-   - 커버리지, 관여율, 해결률
+   - **Phase 1/2 split**: Phase 1 (RAG 즉시) vs Phase 2 (Task 배포 후) 커버리지 분리 측정
+     - coverage_mode=rag_only → Phase 1만 측정
+     - coverage_mode=full → Phase 1 + Phase 2 모두 측정
+   - **GL봇 대비 비교** (gl_bot_baseline 있는 경우):
+     - GL봇 해결률 (gl_resolution) vs ALF 해결률 → ×N배 개선 지표
+     - "GL 3.5% → ALF 28% = ×8배 improvement" 형태로 비즈니스 임팩트 정량화
+   - 커버리지, 관여율, 해결률 (volume-weighted 기준)
    - failure_mode 분포
    - 난이도별 해결률
 

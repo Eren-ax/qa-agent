@@ -194,6 +194,7 @@ def _score_technical_failure(
             notes="timeout: ALF 시스템 지연으로 resolved 간주",
             excluded_from_rate=False,
             judge_latency_s=None,
+            phase=scenario.phase,
         )
     if reason != "error":
         return None
@@ -215,7 +216,28 @@ def _score_technical_failure(
         notes=f"rule-based short-circuit on {reason}",
         excluded_from_rate=False,
         judge_latency_s=None,
+        phase=scenario.phase,
     )
+
+
+def _detect_task_called(scenario: Scenario, transcript: Transcript, criterion_results: list[CriterionResult]) -> bool:
+    """方案C post-hoc: detect whether a task was actually called during execution.
+
+    Heuristics:
+    1. Any success_criterion with type=task_called that passed.
+    2. ALF response contains task execution signals (접수 완료, 조회 결과, etc.)
+    """
+    # Check criterion-based detection
+    for sc, cr in zip(scenario.success_criteria, criterion_results):
+        if sc.type == "task_called" and cr.passed:
+            return True
+    # Check transcript for task execution signal patterns
+    task_signals = ["접수 완료", "조회 결과", "처리 완료", "확인 결과", "조회해", "확인해"]
+    for turn in transcript.turns:
+        for msg in turn.alf_messages:
+            if any(sig in msg.text for sig in task_signals):
+                return True
+    return False
 
 
 def _score_from_judge(
@@ -245,6 +267,7 @@ def _score_from_judge(
         refused = None
 
     excluded = failure_mode == "persona_drift"
+    task_called = _detect_task_called(scenario, transcript, criterion_results)
 
     return ScenarioScore(
         scenario_id=scenario.id,
@@ -260,6 +283,8 @@ def _score_from_judge(
         notes=str(verdict.get("notes", "")),
         excluded_from_rate=excluded,
         judge_latency_s=latency,
+        phase=scenario.phase,
+        task_called_actual=task_called,
     )
 
 
@@ -304,6 +329,7 @@ async def score_scenario(
             notes=f"judge error: {type(exc).__name__}: {exc}",
             excluded_from_rate=False,
             judge_latency_s=None,
+            phase=scenario.phase,
         )
     return _score_from_judge(scenario, transcript, verdict, latency)
 
@@ -316,6 +342,7 @@ def aggregate(
     *,
     noise_rate: float = 0.0,
     intent_pattern_coverage: dict[str, float] | None = None,
+    scenarios: list[Scenario] | None = None,
 ) -> RunAggregate:
     non_oos = [s for s in scores if s.weight > 0.0]
     counted = [s for s in non_oos if not s.excluded_from_rate]
@@ -409,6 +436,93 @@ def aggregate(
     for s in scores:
         failure_dist[s.failure_mode] = failure_dist.get(s.failure_mode, 0) + 1
 
+    # ---- Phase-split scoring (Gap 2: A+C hybrid) ----------------------------
+    # Phase 1 = rag-only scenarios; Phase 2 = all (rag + task + hybrid + human).
+    # Each phase bucket gets its own resolution_rate and coverage.
+    by_phase: dict[str, dict[str, Any]] = {}
+    for s in counted:
+        # 方案C: if task_called_actual=True but phase was "rag", reclassify
+        effective_phase = s.phase
+        if s.task_called_actual and effective_phase == "rag":
+            effective_phase = "task"
+        bucket = by_phase.setdefault(
+            effective_phase,
+            {"count": 0, "weight": 0.0, "engaged_w": 0.0, "resolved_w": 0.0},
+        )
+        bucket["count"] += 1
+        bucket["weight"] += _ew(s)
+        if s.engaged:
+            bucket["engaged_w"] += _ew(s)
+        if s.engaged and s.resolved:
+            bucket["resolved_w"] += _ew(s)
+    for phase_name, pd in by_phase.items():
+        pd["resolution_rate"] = round(pd["resolved_w"] / pd["engaged_w"], 4) if pd["engaged_w"] > 0 else 0.0
+        pd["weight"] = round(pd["weight"], 4)
+        pd["engaged_w"] = round(pd["engaged_w"], 4)
+        pd["resolved_w"] = round(pd["resolved_w"], 4)
+
+    # Compute Phase 1 / Phase 2 aggregate scores for the report.
+    # Phase 1 = rag only; Phase 2 = everything.
+    rag_bucket = by_phase.get("rag", {"weight": 0.0, "engaged_w": 0.0, "resolved_w": 0.0})
+    phase1_engagement = rag_bucket["weight"] / non_noise_share if rag_bucket["weight"] > 0 else 0.0
+    phase1_resolution = rag_bucket["resolved_w"] / rag_bucket["engaged_w"] if rag_bucket["engaged_w"] > 0 else 0.0
+    phase1_coverage = phase1_engagement * phase1_resolution
+    by_phase["_phase1_summary"] = {
+        "engagement_rate": round(phase1_engagement, 4),
+        "resolution_rate": round(phase1_resolution, 4),
+        "coverage": round(phase1_coverage, 4),
+    }
+    by_phase["_phase2_summary"] = {
+        "engagement_rate": round(engagement_rate, 4),
+        "resolution_rate": round(resolution_rate, 4),
+        "coverage": round(coverage, 4),
+    }
+
+    # ---- GL baseline comparison (Gap 1) --------------------------------------
+    gl_baseline_comparison: dict[str, Any] | None = None
+    if scenarios:
+        scenario_map = {s.id: s for s in scenarios}
+        gl_scenarios = [(s, scenario_map.get(s.scenario_id)) for s in counted
+                        if scenario_map.get(s.scenario_id) and scenario_map[s.scenario_id].gl_bot_baseline]
+        if gl_scenarios:
+            gl_total_w = sum(_ew(sc) for sc, _ in gl_scenarios)
+            gl_resolved_w = sum(
+                _ew(sc) * orig.gl_bot_baseline.gl_resolution
+                for sc, orig in gl_scenarios
+                if orig and orig.gl_bot_baseline
+            )
+            alf_resolved_w = sum(_ew(sc) for sc, _ in gl_scenarios if sc.engaged and sc.resolved)
+            gl_rate = gl_resolved_w / gl_total_w if gl_total_w > 0 else 0.0
+            alf_rate = alf_resolved_w / gl_total_w if gl_total_w > 0 else 0.0
+            improvement = alf_rate / gl_rate if gl_rate > 0 else float("inf")
+
+            # "GL이 해주는 건 ALF도 다 해준다" 검증 — can_handle=true subset
+            gl_handleable = [
+                (sc, orig) for sc, orig in gl_scenarios
+                if orig and orig.gl_bot_baseline and orig.gl_bot_baseline.can_handle
+            ]
+            gl_handleable_count = len(gl_handleable)
+            gl_handleable_alf_resolved = sum(1 for sc, _ in gl_handleable if sc.engaged and sc.resolved)
+            gl_handleable_alf_failed = [
+                sc.scenario_id for sc, _ in gl_handleable
+                if not (sc.engaged and sc.resolved)
+            ]
+            gl_superset_proven = gl_handleable_count > 0 and len(gl_handleable_alf_failed) == 0
+
+            gl_baseline_comparison = {
+                "gl_resolution_rate": round(gl_rate, 4),
+                "alf_resolution_rate": round(alf_rate, 4),
+                "improvement_factor": round(improvement, 1) if improvement != float("inf") else "∞",
+                "scenario_count": len(gl_scenarios),
+                # GL superset proof: "GL이 해주는 건 ALF도 다 해준다"
+                "gl_superset": {
+                    "proven": gl_superset_proven,
+                    "gl_handleable_count": gl_handleable_count,
+                    "alf_resolved_count": gl_handleable_alf_resolved,
+                    "alf_failed_scenarios": gl_handleable_alf_failed,
+                },
+            }
+
     return RunAggregate(
         engagement_rate=round(engagement_rate, 4),
         noise_rate=round(noise_rate, 4),
@@ -422,6 +536,8 @@ def aggregate(
         by_intent=by_intent,
         by_difficulty=by_difficulty,
         failure_mode_dist=dict(sorted(failure_dist.items())),
+        by_phase=by_phase,
+        gl_baseline_comparison=gl_baseline_comparison,
     )
 
 
@@ -472,6 +588,12 @@ def render_report(run_score: RunScore, config_extra: dict[str, Any]) -> str:
     lines.append(f"- 이 시나리오 세트는 노이즈 제외 실 상담의 **{_pct(agg.engagement_rate)}**를 대표 (관여율)")
     lines.append(f"- ALF가 관여한 시나리오 중 **{_pct(agg.resolution_rate)}**를 해결 (해결률)")
     lines.append(f"- 최종 커버리지: 실 상담 대비 ALF가 유의미하게 기여하는 비율 = **{_pct(agg.coverage)}**")
+
+    # GL 전환 맥락 해석 추가
+    if agg.gl_baseline_comparison:
+        gl = agg.gl_baseline_comparison
+        lines.append(f"- **GL봇 대비 개선**: GL봇 {_pct(gl['gl_resolution_rate'])} → ALF {_pct(gl['alf_resolution_rate'])}")
+
     lines.append("")
 
     # ---- 난이도별 breakdown ----
@@ -487,6 +609,83 @@ def render_report(run_score: RunScore, config_extra: dict[str, Any]) -> str:
                     f"| {tier} | {d['count']} | {d['engaged']} | {d['resolved']} | "
                     f"{_pct(d['resolution_rate'])} |"
                 )
+        lines.append("")
+
+    # ---- Phase별 분리 수치 (Gap 2) ----
+    if agg.by_phase:
+        p1 = agg.by_phase.get("_phase1_summary", {})
+        p2 = agg.by_phase.get("_phase2_summary", {})
+        if p1 and p2:
+            lines.append("## Phase별 커버리지")
+            lines.append("")
+            lines.append("| Phase | 관여율 | 해결률 | 커버리지 | 설명 |")
+            lines.append("|---|---:|---:|---:|---|")
+            lines.append(
+                f"| **Phase 1** (RAG만) | {_pct(p1.get('engagement_rate', 0))} | "
+                f"{_pct(p1.get('resolution_rate', 0))} | **{_pct(p1.get('coverage', 0))}** | 즉시 도입 시 |"
+            )
+            lines.append(
+                f"| **Phase 2** (전체) | {_pct(p2.get('engagement_rate', 0))} | "
+                f"{_pct(p2.get('resolution_rate', 0))} | **{_pct(p2.get('coverage', 0))}** | Task 연동 후 |"
+            )
+            lines.append("")
+
+            # GL 전환 맥락 해석
+            lines.append("해석:")
+            lines.append(f"- **Phase 1 (RAG+Rules만)**: 지식 업로드만으로 커버리지 **{_pct(p1.get('coverage', 0))}** 달성")
+            lines.append(f"- **Phase 2 (Task 포함)**: API 연동 완료 시 커버리지 **{_pct(p2.get('coverage', 0))}** 달성")
+            p1_cov = p1.get('coverage', 0)
+            p2_cov = p2.get('coverage', 0)
+            if p1_cov > 0 and p2_cov > 0:
+                uplift = p2_cov - p1_cov
+                lines.append(f"- **Task 연동 효과**: +{_pct(uplift)} (Phase 1 대비 {_pct(uplift / p1_cov)} 추가 상승)")
+            lines.append("")
+
+            # Phase breakdown detail
+            lines.append("**Layer별 상세:**")
+            lines.append("")
+            lines.append("| phase | N | weight | 해결률 |")
+            lines.append("|---|---:|---:|---:|")
+            for phase_name in ("rag", "task", "hybrid", "human"):
+                if phase_name in agg.by_phase:
+                    pd = agg.by_phase[phase_name]
+                    lines.append(
+                        f"| {phase_name} | {pd['count']} | {pd['weight']:.3f} | "
+                        f"{_pct(pd['resolution_rate'])} |"
+                    )
+            lines.append("")
+
+    # ---- GL baseline 비교 (Gap 1) ----
+    if agg.gl_baseline_comparison:
+        gl = agg.gl_baseline_comparison
+        lines.append("## GL봇 대비 비교")
+        lines.append("")
+
+        # GL superset proof — 가장 먼저
+        sup = gl.get("gl_superset")
+        if sup:
+            if sup["proven"]:
+                lines.append(
+                    f"> **GL봇이 해결하는 {sup['gl_handleable_count']}개 시나리오 유형을 "
+                    f"ALF가 전부 해결** ({sup['alf_resolved_count']}/{sup['gl_handleable_count']})"
+                )
+            else:
+                lines.append(
+                    f"> ⚠️ GL봇이 해결하는 {sup['gl_handleable_count']}개 유형 중 "
+                    f"ALF가 {sup['alf_resolved_count']}개 해결 — "
+                    f"실패: `{'`, `'.join(sup['alf_failed_scenarios'])}`"
+                )
+            lines.append("")
+
+        lines.append("| 지표 | GL봇 | ALF | 개선 |")
+        lines.append("|---|---:|---:|---:|")
+        imp = gl["improvement_factor"]
+        imp_str = f"×{imp}배" if isinstance(imp, (int, float)) else f"×{imp}"
+        lines.append(
+            f"| 해결률 | {_pct(gl['gl_resolution_rate'])} | "
+            f"{_pct(gl['alf_resolution_rate'])} | **{imp_str}** |"
+        )
+        lines.append(f"| 비교 시나리오 수 | {gl['scenario_count']} | — | — |")
         lines.append("")
 
     # ---- 인텐트별 breakdown ----
@@ -604,6 +803,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     notes="transcript missing",
                     excluded_from_rate=False,
                     judge_latency_s=None,
+                    phase=scenario.phase,
                 )
             )
             print(f"[scorer] [{i}/{len(scenarios)}] {scenario.id} → no transcript, marked error")
@@ -638,7 +838,7 @@ async def main_async(args: argparse.Namespace) -> int:
         id_to_label = {k["id"]: k["label"] for k in config.knowledge_summary} if config.knowledge_summary else {}
         ipc_by_label = {id_to_label.get(k, k): v for k, v in ipc_by_id.items()}
 
-    agg = aggregate(scores, noise_rate=noise_rate, intent_pattern_coverage=ipc_by_label)
+    agg = aggregate(scores, noise_rate=noise_rate, intent_pattern_coverage=ipc_by_label, scenarios=scenarios)
     run_score = RunScore(
         schema_version=SCHEMA_VERSION,
         run_id=args.run_id,

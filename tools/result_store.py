@@ -102,6 +102,15 @@ class SuccessCriterion:
 
 
 @dataclass
+class GlBotBaseline:
+    """GL bot capability baseline for a scenario (Gap 1: competitor framing)."""
+
+    can_handle: bool  # GL bot can resolve this scenario type
+    gl_behavior: str  # e.g. "에스컬레이션 (주문조회 Read만 간헐 수행, 취소 Write 0건)"
+    gl_resolution: float  # 0.0–1.0; GL bot's estimated resolution rate for this type
+
+
+@dataclass
 class Scenario:
     """One QA scenario — the unit of both execution and scoring."""
 
@@ -115,6 +124,10 @@ class Scenario:
     difficulty_tier: str = "happy"  # "happy" | "unhappy" | "edge"
     source: str = ""  # "sop-agent", "manual", "interactive", ...
     source_pattern: Optional[str] = None  # pattern name if seeded from common_phrases
+    # Gap 2: Phase tagging (A+C hybrid — set at generation, verified post-run)
+    phase: str = "rag"  # "rag" | "task" | "hybrid" | "human"
+    # Gap 1: GL bot baseline (None when is_competitor_bot=false)
+    gl_bot_baseline: Optional[GlBotBaseline] = None
 
 
 @dataclass
@@ -209,15 +222,19 @@ def read_config_snapshot(run_id: str, *, root: Path = DEFAULT_STORAGE_ROOT) -> C
 def read_scenarios(run_id: str, *, root: Path = DEFAULT_STORAGE_ROOT) -> ScenarioSet:
     path = run_dir(run_id, root) / "scenarios.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    scenarios = [
-        Scenario(
-            **{
-                **s,
-                "success_criteria": [SuccessCriterion(**c) for c in s.get("success_criteria", [])],
-            }
+    scenarios = []
+    for s in data["scenarios"]:
+        gl_raw = s.get("gl_bot_baseline")
+        gl_obj = GlBotBaseline(**gl_raw) if gl_raw else None
+        scenarios.append(
+            Scenario(
+                **{
+                    **{k: v for k, v in s.items() if k not in ("success_criteria", "gl_bot_baseline")},
+                    "success_criteria": [SuccessCriterion(**c) for c in s.get("success_criteria", [])],
+                    "gl_bot_baseline": gl_obj,
+                }
+            )
         )
-        for s in data["scenarios"]
-    ]
     return ScenarioSet(
         schema_version=data["schema_version"],
         run_id=data["run_id"],
@@ -270,6 +287,10 @@ class ScenarioScore:
     notes: str = ""
     excluded_from_rate: bool = False  # true when persona_drift invalidated the run
     judge_latency_s: Optional[float] = None
+    # Phase tag propagated from Scenario for phase-split aggregation
+    phase: str = "rag"  # "rag" | "task" | "hybrid" | "human"
+    # Whether a task was actually called during execution (方案C post-hoc)
+    task_called_actual: bool = False
 
 
 @dataclass
@@ -320,6 +341,11 @@ class RunAggregate:
     by_difficulty: dict[str, dict[str, Any]]  # happy/unhappy/edge breakdown
     failure_mode_dist: dict[str, int]
 
+    # Phase-split scoring (Gap 2)
+    by_phase: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # GL bot baseline comparison (Gap 1) — only populated when is_competitor_bot=true
+    gl_baseline_comparison: Optional[dict[str, Any]] = None
+
 
 @dataclass
 class RunScore:
@@ -355,6 +381,7 @@ def read_scores(run_id: str, *, root: Path = DEFAULT_STORAGE_ROOT) -> RunScore:
         )
         for s in data["scores"]
     ]
+    agg_data = data["aggregate"]
     return RunScore(
         schema_version=data["schema_version"],
         run_id=data["run_id"],
@@ -362,7 +389,7 @@ def read_scores(run_id: str, *, root: Path = DEFAULT_STORAGE_ROOT) -> RunScore:
         judge_model=data["judge_model"],
         judge_prompt_version=data["judge_prompt_version"],
         scores=scores,
-        aggregate=RunAggregate(**data["aggregate"]),
+        aggregate=RunAggregate(**agg_data),
     )
 
 

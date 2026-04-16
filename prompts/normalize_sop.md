@@ -19,15 +19,17 @@ be missing — handle gracefully.
 | `<sop_results_dir>/pipeline_summary.md` | recommended | overall volume + automation priorities |
 | `<sop_results_dir>/03_sop/metadata.json` | **required** | list of SOPs with topic + records count |
 | `<sop_results_dir>/02_extraction/faq.json` | **required** | topic-grouped Q/A seeds |
-| `<sop_results_dir>/02_extraction/patterns.json` | recommended | clusters, company_tone, escalation hints |
-| `<sop_results_dir>/02_extraction/response_strategies.json` | recommended | escalation_triggers, automation_opportunity |
+| `<sop_results_dir>/02_extraction/patterns.json` | **required** | clusters, company_tone, escalation hints, **GL bot baseline (Gap 1)**, escalation_triggers |
 | `<sop_results_dir>/02_extraction/keywords.json` | optional | taxonomy for intent naming |
-| ALF task JSON (primary path) | recommended | machine-readable task definitions |
+| `<sop_results_dir>/05_sales_report/analysis/automation_analysis.md` | recommended | **4-Layer model (Gap 2)** — RAG/Task/Hybrid/Human breakdown |
+| `<sop_results_dir>/04_tasks_json/TASK*.json` | **recommended** | ALF Task JSON (채널톡 업로드 가능 형식) |
 | `<sop_results_dir>/04_tasks/TASK*.md` | fallback | Mermaid flowcharts if task JSON unavailable |
 
-If both ALF task JSON and `04_tasks/*.md` are present, **prefer the JSON** —
-the Markdown is a human-authored draft and may lag behind the actual ALF
-deployment.
+**Task source priority**: `04_tasks_json/*.json` (primary) → `04_tasks/*.md` (fallback).
+The JSON files are production-ready and match the ALF upload format exactly.
+
+**Breaking change (sop-agent v2)**: `response_strategies.json` is **removed**.
+Escalation triggers are now embedded in `patterns.json → clusters[].patterns[].escalation_triggers`.
 
 ---
 
@@ -52,6 +54,15 @@ client:
   stats:
     total_records: <int>            # source of truth for volume_weight math
     extraction_date: <string>
+  gl_bot_context:                   # from patterns.json → metadata.analysis_context (Gap 1)
+    competitor: <string | null>     # e.g. "GL"
+    gl_bot_status: <string | null>  # e.g. "active (personId=632346)"
+    gl_bot_involvement: <string | null>       # e.g. "68.8% of chats (1864/2711)"
+    gl_bot_escalation_rate: <string | null>   # e.g. "88.1%"
+    gl_bot_real_resolution_rate: <string | null> # e.g. "3.5% (95/2711 chats)"
+    gl_bot_read_task_execution: <string | null>  # e.g. "2.79% (52/1864 GL-involved chats)"
+    gl_bot_write_task_execution: <string | null> # e.g. "1건 (배송지 변경 only)"
+    gl_bot_behavior: <string | null>  # e.g. "greeting → info collection → manager escalation"
 
 intents:                            # ONE entry per SOP topic in metadata.json
                                     # Order: ascending by `sop_file` filename for determinism.
@@ -62,6 +73,7 @@ intents:                            # ONE entry per SOP topic in metadata.json
     records: <int>                  # metadata.sop_files[i].records
     volume_weight: <float>          # records / client.stats.total_records (rounded to 3 decimals)
     automation_ready: <bool>        # uppercase(id) ∈ metadata.coverage.automation_ready
+    phase_hint: <string>            # "rag" | "task" | "hybrid" | "human" — from automation_analysis.md (Gap 2)
     faqs:                           # from faq.json[faq_by_topic][<MATCHING_KEY>], may be []
       - q: <string>                 # verbatim
         a: <string>                 # verbatim
@@ -70,9 +82,9 @@ intents:                            # ONE entry per SOP topic in metadata.json
         type: <string>              # 정보_요청 | 프로세스_문의 | 문제_신고
         frequency: <int>            # sample frequency from extraction (relative within cluster)
         common_phrases: [<string>]  # verbatim customer utterances — scenario seed candidates
-    escalation_triggers: [<string>] # from response_strategies[topic].escalation_triggers, may be []
-    automation_opportunity: <string> # from response_strategies[topic].automation_opportunity, may be ""
-    key_info: [<string>]            # from response_strategies[topic].key_info, may be []
+    escalation_triggers: [<string>] # **removed in sop-agent v2** — set to [] unless legacy response_strategies.json present
+    automation_opportunity: <string> # **removed in sop-agent v2** — set to "" unless legacy response_strategies.json present
+    key_info: [<string>]            # **removed in sop-agent v2** — set to [] unless legacy response_strategies.json present
 
 tasks:                              # from ALF task JSON (primary) OR 04_tasks/*.md (fallback)
   - id: <string>                    # from JSON `id` field, or filename stem for MD fallback
@@ -175,18 +187,89 @@ generation_metadata:
   skip entirely — they do not map to intents. Their content feeds
   `out_of_scope_hints` instead.
 
-### `intents[].escalation_triggers`
-- Copy verbatim from
-  `response_strategies.json.strategies_by_topic[<matching_topic>].escalation_triggers`.
-- Topic key matches the FAQ key (same uppercase form).
-- If no match, set to empty list (no warning needed — not all intents
-  escalate).
+### `intents[].phase_hint` (Gap 2: Phase 1/2 분리 scoring)
+- **Source (sop-agent v2)**: `05_sales_report/analysis/automation_analysis.md` 4-Layer 모델
+- **Layer mapping**:
+  - **Layer 1 (RAG)** → `"rag"`: FAQ/정보 요청만으로 해결 (외부 API 불필요)
+  - **Layer 2 (Task)** → `"task"`: API 연동 기반 프로세스 (주문조회/취소/반품)
+  - **Layer 3 (Hybrid)** → `"hybrid"`: RAG+Task 복합 (정보 안내 후 API 호출)
+  - **Layer 4 (Human)** → `"human"`: Manager escalation 필수
+- **추출 방법**:
+  1. Read `05_sales_report/analysis/automation_analysis.md`
+  2. Parse each Layer's "대상 문의 유형" + table (SOP 토픽 리스트)
+  3. Match current intent's `label` or `sop_file` against Layer items
+  4. Multiple Layer 분류 시 (예: 재입고 Layer 1 90% + Layer 3 10%):
+     - Select Layer with highest weight as `phase_hint`
+     - Add note: `"intent <id>: phase_hint=rag (90%), but 10% classified as hybrid"`
+  5. No match → default `"rag"` + note: `"intent <id>: phase_hint not found, defaulting to rag"`
+- **Missing file**: All intents get `phase_hint: null` + single note: `"automation_analysis.md not found, phase_hint unavailable for all intents"`
 
-### Task JSON shape (when `source: alf_task_json`)
-The ALF task JSON is **user-supplied and its shape is not fixed.** Do not
-assume specific field names. Extract by best-effort using the field
-mappings below, and only what is present:
+### `client.gl_bot_context` (Gap 1: GL baseline 비교)
+- **Source**: `patterns.json → metadata.analysis_context`
+- **필드 추출**: 아래 키를 verbatim 복사 (누락 시 `null`):
+  - `competitor` — 경쟁 봇 이름 (e.g. "GL")
+  - `gl_bot_status` — 상태 (e.g. "active (personId=632346)")
+  - `gl_bot_involvement` — 개입률 (e.g. "68.8% of chats (1864/2711)")
+  - `gl_bot_escalation_rate` — 에스컬레이션률 (e.g. "88.1%")
+  - `gl_bot_real_resolution_rate` — 실질 해결률 (e.g. "3.5% (95/2711 chats)")
+  - `gl_bot_read_task_execution` — Read Task 수행률 (e.g. "2.79% (52/1864 GL-involved chats)")
+  - `gl_bot_write_task_execution` — Write Task 수행률 (e.g. "1건 (배송지 변경 only)")
+  - `gl_bot_behavior` — 행동 패턴 (e.g. "greeting → info collection → manager escalation")
+- **Missing `analysis_context`**: `gl_bot_context`의 모든 필드를 `null`로 설정
+- **None 허용**: GL 고객사가 아닌 경우 모든 필드 `null`은 정상
 
+### `intents[].escalation_triggers` / `automation_opportunity` / `key_info` (legacy fields)
+**Breaking change (sop-agent v2)**: These fields are **no longer generated** by sop-agent.
+They existed in `response_strategies.json` which has been removed.
+
+**Action**:
+- Set all three fields to empty (`[]` for lists, `""` for strings) by default.
+- **Legacy fallback (sop-agent v1)**: If `response_strategies.json` exists in the input directory,
+  copy from `strategies_by_topic[<matching_topic>]`.
+  - `escalation_triggers`: list of strings
+  - `automation_opportunity`: single string
+  - `key_info`: list of strings
+  - Topic key matches the FAQ key (uppercase form).
+- Add a single note if legacy file is present: `"escalation_triggers/automation_opportunity/key_info: sourced from legacy response_strategies.json (sop-agent v1)"`
+- Add no note if all fields are empty (v2 is the new default).
+
+### Task JSON shape
+
+**Primary source (sop-agent v2)**: `04_tasks_json/TASK*.json` — production-ready ALF Task JSON.
+These files match the exact Channel.io ALF upload format.
+
+**Shape (sop-agent v2)**:
+```json
+{
+  "task": {
+    "name": "<string>",           // e.g. "벨리에 - 주문조회"
+    "trigger": "<string>",        // multi-line prompt with [역할] + [트리거 조건] + examples
+    "memorySchema": [...],        // ALF memory variables
+    "nodes": [                    // ALF workflow nodes
+      {
+        "id": "node-N",
+        "key": "A|B|C...",
+        "name": "<node name>",
+        "type": "agent | userChatInlineAction | appFunction | branch",
+        "instruction": "<markdown instruction>",  // for type=agent
+        "next": { "type": "goto|branch|end", "to": "node-X" | "conditions": [...] }
+      }
+    ]
+  }
+}
+```
+
+**Canonical extraction (sop-agent v2)**:
+| Canonical field | JSON path | Notes |
+|---|---|---|
+| `id` | filename stem (e.g. `TASK1_주문조회.json` → `task1_주문조회`) | Derive from filename, lowercase |
+| `name` | `task.name` | |
+| `triggers` | Parse from `task.trigger` field — extract example utterances from the "문의 예시:" section | Split by `- ` lines |
+| `external_admin_required` | Search `task.nodes[]` for any `type: "appFunction"` | `true` if found, else `false` |
+| `branches` | Parse `task.nodes[]` for nodes with `type: "branch"` | Extract `conditions[].filter` logic → label + outcome |
+
+**Legacy fallback (sop-agent v1 or user-supplied JSON)**: If JSON shape doesn't match above,
+fall back to best-effort extraction using the field mappings from the old spec:
 | Canonical field | Common JSON field names to look for |
 |---|---|
 | `id` | `id`, `task_id`, `slug`, or filename |
