@@ -85,7 +85,7 @@ CLOSER_MAX_LEN = 30
 FORM_FAKE_VALUES = {
     "email": "testuser@example.com",
     "tel": "010-9876-5432",
-    "text": "테스트",
+    "text": "testuser@example.com",  # fallback to email format for safety
 }
 
 
@@ -218,12 +218,26 @@ async def _detect_form_input_type(driver: PlaywrightDriver) -> str:
 
             # 4. Check surrounding label / parent text
             try:
+                # Check parent container
                 parent_text = await page.locator(f"{sel}/..").first.inner_text(timeout=500)
                 parent_lower = parent_text.lower()
                 if any(kw in parent_lower for kw in ("email", "이메일", "메일")):
                     return "email"
                 if any(kw in parent_lower for kw in ("phone", "전화", "연락처")):
                     return "tel"
+            except Exception:  # noqa: BLE001
+                pass
+
+            # 5. Check nearby label elements (preceding-sibling, for attribute, etc.)
+            try:
+                input_id = await loc.get_attribute("id")
+                if input_id:
+                    label_text = await page.locator(f"label[for='{input_id}']").first.inner_text(timeout=500)
+                    label_lower = label_text.lower()
+                    if any(kw in label_lower for kw in ("email", "이메일", "메일")):
+                        return "email"
+                    if any(kw in label_lower for kw in ("phone", "전화", "연락처")):
+                        return "tel"
             except Exception:  # noqa: BLE001
                 pass
 
