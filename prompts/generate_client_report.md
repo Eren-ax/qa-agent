@@ -44,7 +44,7 @@ wow-point를 전달해야 합니다.
    - **Phase별 분리 수치** (Gap 2): `aggregate.by_phase._phase1_summary` (RAG만)
      및 `aggregate.by_phase._phase2_summary` (전체). 각각
      `engagement_rate`, `resolution_rate`, `coverage` 포함.
-   - **GL봇 대비 비교** (Gap 1): `aggregate.gl_baseline_comparison` →
+   - **경쟁사 봇 대비 비교** (Gap 1): `aggregate.gl_baseline_comparison` →
      `gl_resolution_rate`, `alf_resolution_rate`, `improvement_factor`.
      `improvement_factor` = "∞" (GL이 0% 해결) 또는 ×N.N배.
    - **Phase별 상세**: `aggregate.by_phase.rag`, `.task`, `.hybrid`, `.human` →

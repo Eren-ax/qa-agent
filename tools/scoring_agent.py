@@ -632,7 +632,7 @@ def render_report(run_score: RunScore, config_extra: dict[str, Any]) -> str:
     # GL 전환 맥락 해석 추가
     if agg.gl_baseline_comparison:
         gl = agg.gl_baseline_comparison
-        lines.append(f"- **GL봇 대비 개선**: GL봇 {_pct(gl['gl_resolution_rate'])} → ALF {_pct(gl['alf_resolution_rate'])}")
+        lines.append(f"- **경쟁사 봇 대비 개선**: 경쟁사 봇 {_pct(gl['gl_resolution_rate'])} → ALF {_pct(gl['alf_resolution_rate'])}")
 
     lines.append("")
 
@@ -698,7 +698,7 @@ def render_report(run_score: RunScore, config_extra: dict[str, Any]) -> str:
     # ---- GL baseline 비교 (Gap 1) ----
     if agg.gl_baseline_comparison:
         gl = agg.gl_baseline_comparison
-        lines.append("## GL봇 대비 비교")
+        lines.append("## 경쟁사 봇 대비 비교")
         lines.append("")
 
         # GL superset proof — 가장 먼저
@@ -706,18 +706,18 @@ def render_report(run_score: RunScore, config_extra: dict[str, Any]) -> str:
         if sup:
             if sup["proven"]:
                 lines.append(
-                    f"> **GL봇이 해결하는 {sup['gl_handleable_count']}개 시나리오 유형을 "
+                    f"> **경쟁사 봇이 해결하는 {sup['gl_handleable_count']}개 시나리오 유형을 "
                     f"ALF가 전부 해결** ({sup['alf_resolved_count']}/{sup['gl_handleable_count']})"
                 )
             else:
                 lines.append(
-                    f"> ⚠️ GL봇이 해결하는 {sup['gl_handleable_count']}개 유형 중 "
+                    f"> ⚠️ 경쟁사 봇이 해결하는 {sup['gl_handleable_count']}개 유형 중 "
                     f"ALF가 {sup['alf_resolved_count']}개 해결 — "
                     f"실패: `{'`, `'.join(sup['alf_failed_scenarios'])}`"
                 )
             lines.append("")
 
-        lines.append("| 지표 | GL봇 | ALF | 개선 |")
+        lines.append("| 지표 | 경쟁사 봇 | ALF | 개선 |")
         lines.append("|---|---:|---:|---:|")
         imp = gl["improvement_factor"]
         imp_str = f"×{imp}배" if isinstance(imp, (int, float)) else f"×{imp}"

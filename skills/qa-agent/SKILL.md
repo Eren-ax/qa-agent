@@ -81,7 +81,7 @@ After completion, return to the user:
 - 핵심 수치 요약:
   - **Phase 1 (RAG만)**: 즉시 도입 시 커버리지 (rag_only mode)
   - **Phase 2 (전체)**: Task 연동 후 커버리지 (full mode)
-  - **GL봇 대비 개선**: GL 해결률 vs ALF 해결률 (×N배)
+  - **경쟁사 봇 대비 개선**: GL 해결률 vs ALF 해결률 (×N배)
   - 관여율, 해결률
 - `report.md` 경로 (상세 분석)
 - `report_slides.html` 경로 (브라우저에서 바로 열 수 있음)
@@ -391,8 +391,8 @@ Steps:
 
 5. **추가 인사이트**:
    - **Phase 1/2 split**: Phase 1 (RAG 즉시) vs Phase 2 (Task 배포 후) 커버리지 분리 측정
-   - **GL봇 대비 비교** (gl_bot_baseline 있는 경우):
-     - GL봇 해결률 (gl_resolution) vs ALF 해결률 → ×N배 개선 지표
+   - **경쟁사 봇 대비 비교** (gl_bot_baseline 있는 경우):
+     - 경쟁사 봇 해결률 (gl_resolution) vs ALF 해결률 → ×N배 개선 지표
    - **인텐트별 상세**: 각 인텐트의 engagement_rate, resolution_rate, actual_coverage
    - **난이도별 해결률**: Happy/Edge/Unhappy 각각의 해결률
    - **failure_mode 분포**: not_engaged, judge_fail, timeout 등
