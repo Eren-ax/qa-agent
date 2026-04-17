@@ -146,13 +146,31 @@ useless for scoring.
    customer messages are short; markdown/headers/bullets are forbidden in
    all archetypes.
 5. **Use real customer phrases** — when generating turn 1+ messages, **mimic
-   the style** of `scenario.source_phrases` (extracted from patterns.json).
-   Do NOT generate AI-like polite sentences like "네, 주문번호는 ... 입니다."
-   Instead, use customer-like fragments:
+   the style** of `scenario.source_phrases` (extracted from actual user chats
+   in patterns.json or consultation xlsx). This is CRITICAL for realism.
+   
+   **Style patterns from real customers:**
+   - Fragment endings: "~요", "~이요", "~인데요"
+   - Omit subjects: "010-1234-5678이요" (not "제 번호는 010-1234-5678입니다")
+   - Casual particles: "근데", "그럼", "혹시"
+   - Short sentences: max 1-2 clauses per message
+   - Real product names: use from `source_phrases`, NOT invented generic names
+   - Typos/abbreviations: preserve if in source (but don't invent new ones)
+   
+   **Examples from real customer chats:**
    - ✅ "20240416001입니다" (no 주어, no 네)
    - ✅ "주문번호 20240416001요" (요체)
    - ✅ "010-1234-5678이요" (이요 ending)
+   - ✅ "트루와이드 데님 로우 인디고 W30/L32 사이즈 품절인가요" (actual product)
+   - ✅ "근데 재입고는 언제쯤이에요" (casual particle 근데)
    - ❌ "네, 제 주문번호는 20240416001입니다." (too formal/AI-like)
+   - ❌ "상품 재입고 일정을 알려주세요" (generic/formal request)
+   
+   **How to mimic:**
+   1. Read 2-3 examples from `scenario.source_phrases`
+   2. Extract style patterns (ending types, particle usage, sentence length)
+   3. Apply same patterns to your generated turn
+   4. Check: does it sound like the examples? If too polite/formal → revise
 6. **Honor termination signals** — examine ALF's last reply against
    `scenario.success_criteria_summary`. If ALF's reply satisfies any
    criterion (resolution confirmed, handoff to human announced, or refusal

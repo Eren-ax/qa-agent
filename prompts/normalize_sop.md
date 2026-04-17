@@ -19,11 +19,12 @@ be missing — handle gracefully.
 | `<sop_results_dir>/pipeline_summary.md` | recommended | overall volume + automation priorities |
 | `<sop_results_dir>/03_sop/metadata.json` | **required** | list of SOPs with topic + records count |
 | `<sop_results_dir>/02_extraction/faq.json` | **required** | topic-grouped Q/A seeds |
-| `<sop_results_dir>/02_extraction/patterns.json` | **required** | clusters, company_tone, escalation hints, **GL bot baseline (Gap 1)**, escalation_triggers |
+| `<sop_results_dir>/02_extraction/patterns.json` | **required** | clusters, company_tone, escalation hints, **GL bot baseline (Gap 1)**, escalation_triggers, **common_phrases (real user utterances)** |
 | `<sop_results_dir>/02_extraction/keywords.json` | optional | taxonomy for intent naming |
 | `<sop_results_dir>/05_sales_report/analysis/automation_analysis.md` | recommended | **4-Layer model (Gap 2)** — RAG/Task/Hybrid/Human breakdown |
 | `<sop_results_dir>/04_tasks_json/TASK*.json` | **recommended** | ALF Task JSON (채널톡 업로드 가능 형식) |
 | `<sop_results_dir>/04_tasks/TASK*.md` | fallback | Mermaid flowcharts if task JSON unavailable |
+| `<sop_results_dir>/data/*.xlsx` | optional | **Raw consultation data** for extracting additional user utterances |
 
 **Task source priority**: `04_tasks_json/*.json` (primary) → `04_tasks/*.md` (fallback).
 The JSON files are production-ready and match the ALF upload format exactly.
@@ -171,7 +172,7 @@ generation_metadata:
 - **Never paraphrase Q/A.** Customer utterances are scenario seeds and must
   preserve original phrasing, typos, casual tone, and formatting.
 
-### `intents[].patterns` (from patterns.json clusters)
+### `intents[].patterns` (from patterns.json clusters + raw consultation data)
 - **Matching logic**: each cluster in `patterns.json.clusters` maps to an
   intent. Use the same key-matching strategy as FAQ: cluster `category` +
   `label` → intent `id` / `label`. Multiple clusters can map to one intent
@@ -179,13 +180,24 @@ generation_metadata:
   SOP groups them). Merge patterns from all matched clusters.
 - **Fields**: copy each pattern's `name`, `type`, `frequency`, and
   `common_phrases` verbatim. Do not paraphrase `common_phrases` — they are
-  real customer utterances and serve as scenario seeds.
+  **real customer utterances from actual user chats** and serve as scenario seeds.
+- **Additional utterances from xlsx (optional)**: if `<sop_results_dir>/data/*.xlsx`
+  is available, extract additional user utterances matching this intent's keywords
+  and append to `common_phrases` (up to 5 additional samples per pattern).
+  Use `tools.extract_user_utterances.extract_utterances_from_xlsx()` if available,
+  or parse the Excel file directly looking for columns: `user_message`,
+  `customer_message`, `첫 메시지`, `message`, `content`.
 - **Ordering**: sort patterns by `frequency` descending within each intent.
 - **Missing clusters**: if no cluster matches an intent, set `patterns: []`
   and add a note.
 - **Noise clusters** (listed in `patterns.json.metadata.noise_clusters`):
   skip entirely — they do not map to intents. Their content feeds
   `out_of_scope_hints` instead.
+  
+**Critical**: `common_phrases` are the PRIMARY SOURCE for realistic QA messages.
+They contain actual customer language: typos, casual particles (요/이요), fragments,
+product names, abbreviations. Preserve them EXACTLY as-is — persona generation
+will mimic their style for turn 1+ messages.
 
 ### `intents[].phase_hint` (Gap 2: Phase 1/2 분리 scoring)
 - **Source (sop-agent v2)**: `05_sales_report/analysis/automation_analysis.md` 4-Layer 모델

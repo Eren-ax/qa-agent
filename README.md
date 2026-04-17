@@ -23,12 +23,17 @@ sop-agent 결과 중 사용하는 파일:
 <sop_results_dir>/
 ├── 03_sop/metadata.json                    # 필수 — intent 목록 + 건수
 ├── 02_extraction/faq.json                  # 필수 — FAQ Q/A (시나리오 seed)
-├── 02_extraction/patterns.json             # 필수 — 패턴 + frequency + common_phrases
+├── 02_extraction/patterns.json             # 필수 — 패턴 + frequency + common_phrases (실제 유저 발화)
 ├── 02_extraction/response_strategies.json  # 권장 — escalation_triggers
 ├── 04_tasks/TASK*.md                       # 선택 — 태스크 정의 fallback
 ├── pipeline_summary.md                     # 권장 — 월간 건수 등
+├── data/*.xlsx                             # 선택 — 원본 상담 데이터 (추가 유저 발화 추출용)
 └── *_alf_implementation_guide.md           # 선택 — 경쟁사 수치 (없으면 데이터에서 추정)
 ```
+
+**새로운 기능 (v2)**: patterns.json의 `common_phrases`와 원본 상담 xlsx를 활용하여
+실제 고객 발화 스타일을 QA 페르소나에 반영합니다. AI-like한 정중한 문장이 아니라
+"~요", "~인데요" 같은 실제 고객 말투를 모방합니다.
 
 이 입력을 받아:
 1. 실 상담 패턴 기반 QA 시나리오를 생성하고
