@@ -1,0 +1,103 @@
+{
+  "schema_version": "v1",
+  "client": "벨리에",
+  "description": "벨리에 ALF 테스트 채널에 하드코딩된 목업 데이터. persona가 이 데이터에서 값을 선택하여 자연스러운 대화 생성.",
+  "mock_orders": {
+    "20240416001": {
+      "description": "배송중 (Happy Path)",
+      "order_status": "배송중",
+      "tracking_number": "123456789012",
+      "delivery_date": "2024-04-13",
+      "is_shipped": true,
+      "payment_method": "card"
+    },
+    "20240416002": {
+      "description": "입금확인 (취소/주소변경 가능)",
+      "order_status": "입금확인",
+      "is_shipped": false,
+      "payment_method": "card"
+    },
+    "20240416003": {
+      "description": "배송완료 7일 초과 (반품/교환 불가)",
+      "order_status": "배송완료",
+      "tracking_number": "111222333444",
+      "delivery_date": "2024-03-20",
+      "is_shipped": true,
+      "payment_method": "card"
+    },
+    "20240416004": {
+      "description": "상품준비중 (무통장입금)",
+      "order_status": "상품준비중",
+      "is_shipped": false,
+      "payment_method": "bank"
+    },
+    "20240416005": {
+      "description": "반품 진행중",
+      "order_status": "반품접수",
+      "tracking_number": "555666777888",
+      "delivery_date": "2024-04-10",
+      "is_shipped": true,
+      "payment_method": "card",
+      "return_status": "검수중"
+    },
+    "20240416006": {
+      "description": "교환 진행중",
+      "order_status": "교환접수",
+      "tracking_number": "999888777666",
+      "delivery_date": "2024-04-12",
+      "is_shipped": true,
+      "payment_method": "card",
+      "exchange_status": "수거중"
+    },
+    "99999999999": {
+      "description": "주문 없음 (테스트용)",
+      "order_found": false
+    },
+    "88888888888": {
+      "description": "주문자 불일치 (테스트용)",
+      "order_found": true,
+      "owner_match": false
+    }
+  },
+  "mock_customers": {
+    "010-1234-5678": {
+      "name": "홍길동",
+      "coupons": [
+        {"name": "10% 할인쿠폰", "discount": 10000, "expiry": "2024-12-31", "minOrder": 50000},
+        {"name": "무료배송 쿠폰", "discount": 3000, "expiry": "2024-06-30", "minOrder": 0},
+        {"name": "무료반품 쿠폰", "discount": 6000, "expiry": "2024-08-31", "minOrder": 0}
+      ],
+      "has_free_return_coupon": true
+    },
+    "010-9876-5432": {
+      "name": "김철수",
+      "coupons": [
+        {"name": "5,000원 할인쿠폰", "discount": 5000, "expiry": "2024-05-31", "minOrder": 30000}
+      ],
+      "has_free_return_coupon": false
+    },
+    "010-5555-6666": {
+      "name": "이영희",
+      "coupons": [],
+      "has_free_return_coupon": false
+    }
+  },
+  "usage_guidelines": {
+    "order_id": {
+      "default": "20240416001",
+      "edge_cases": ["20240416003", "99999999999", "88888888888"],
+      "happy_path": ["20240416001", "20240416002"],
+      "process_scenarios": ["20240416005", "20240416006"]
+    },
+    "phone": {
+      "default": "010-1234-5678",
+      "edge_cases": ["010-5555-6666"],
+      "happy_path": ["010-1234-5678", "010-9876-5432"]
+    },
+    "persona_rules": [
+      "happy 난이도: default 값 사용 (20240416001, 010-1234-5678)",
+      "edge 난이도: edge_cases 또는 process_scenarios 값 사용",
+      "unhappy 난이도: edge_cases 중 실패 케이스(99999999999, 88888888888) 사용"
+    ]
+  }
+}

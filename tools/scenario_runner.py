@@ -1,7 +1,8 @@
 """Phase 3 automation: drive a scenarios.json through ALF.
 
-Wraps PlaywrightDriver with per-turn persona inference via Claude (Anthropic
-SDK) and persists transcripts.jsonl under storage/runs/<run_id>/.
+Wraps PlaywrightDriver with per-turn persona inference via LLM client
+(Anthropic or Upstage fallback) and persists transcripts.jsonl under
+storage/runs/<run_id>/.
 
 Usage:
     uv run python -m tools.scenario_runner --run-id <id> --channel-url <url>
@@ -10,7 +11,8 @@ Usage:
     uv run python -m tools.scenario_runner --run-id <id> --channel-url <url> \
         --headed --timeout 90
 
-Requires ANTHROPIC_API_KEY in env (loaded from `.env` at repo root if present).
+Requires ANTHROPIC_API_KEY or UPSTAGE_API_KEY in env (loaded from `.env` at repo root if present).
+Auto-fallback: ANTHROPIC_API_KEY → UPSTAGE_API_KEY if Anthropic key is not available.
 """
 
 from __future__ import annotations
@@ -24,10 +26,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
 from tools.chat_driver import PlaywrightDriver
+from tools.llm_client import create_llm_client, call_llm, ProviderType
 from tools.result_store import (
     SCHEMA_VERSION,
     AlfMessageRecord,
@@ -154,6 +156,17 @@ def build_persona_user_prompt(
     if client_tone:
         tone_text = f"\nclient.tone (side info, do not mirror):\n{client_tone}\n"
 
+    # Inject mock_context if present in scenario
+    mock_context_text = ""
+    if hasattr(scenario, "mock_context") and scenario.mock_context:
+        import json
+        mock_context_text = f"\nscenario.mock_context (use these exact values when ALF asks):\n{json.dumps(scenario.mock_context, ensure_ascii=False, indent=2)}\n"
+
+    # Inject source_phrases if present in scenario
+    source_phrases_text = ""
+    if hasattr(scenario, "source_phrases") and scenario.source_phrases:
+        source_phrases_text = f"\nscenario.source_phrases (mimic this style for turn 1+ messages):\n{chr(10).join(f'  - {p}' for p in scenario.source_phrases[:3])}\n"
+
     return f"""You are playing the **{scenario.persona_ref}** persona for QA scenario `{scenario.id}`.
 
 scenario.intent: {scenario.intent}
@@ -161,7 +174,7 @@ scenario.success_criteria_summary:
 {criteria_summary}
 scenario.max_turns: {scenario.max_turns}
 turns_remaining: {turns_remaining}
-{tone_text}
+{tone_text}{mock_context_text}{source_phrases_text}
 Conversation history (turn 0 = your initial_message + ALF's reply):
 {history_text}
 
@@ -171,15 +184,22 @@ text. Stay strictly in character per the {scenario.persona_ref} archetype's
 rules in your system prompt."""
 
 
-async def generate_persona_message(client: AsyncAnthropic, *, system_prompt: str, user_prompt: str) -> str:
-    response = await client.messages.create(
-        model=PERSONA_MODEL,
-        max_tokens=PERSONA_MAX_TOKENS,
+async def generate_persona_message(
+    client,
+    *,
+    provider: ProviderType,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    return await call_llm(
+        client=client,
+        provider=provider,
+        model=model,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}],
+        user=user_prompt,
+        max_tokens=PERSONA_MAX_TOKENS,
     )
-    parts = [b.text for b in response.content if hasattr(b, "text")]
-    return "".join(parts)
 
 
 async def _detect_form_input_type(driver: PlaywrightDriver) -> str:
@@ -307,7 +327,9 @@ async def run_one_scenario(
     *,
     channel_url: str,
     run_id: str,
-    anthropic_client: AsyncAnthropic,
+    llm_client,
+    provider: ProviderType,
+    model: str,
     persona_system_prompt: str,
     client_tone: dict | None,
     headed: bool,
@@ -410,7 +432,9 @@ async def run_one_scenario(
                 client_tone=client_tone,
             )
             raw = await generate_persona_message(
-                anthropic_client,
+                llm_client,
+                provider=provider,
+                model=model,
                 system_prompt=persona_system_prompt,
                 user_prompt=user_prompt,
             )
@@ -424,7 +448,9 @@ async def run_one_scenario(
                     "quotes. Stay in character."
                 )
                 raw = await generate_persona_message(
-                    anthropic_client,
+                    llm_client,
+                    provider=provider,
+                    model=model,
                     system_prompt=persona_system_prompt,
                     user_prompt=retry_prompt,
                 )
@@ -520,12 +546,8 @@ async def run_one_scenario(
 
 
 async def main_async(args: argparse.Namespace) -> int:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print(
-            "[runner] ANTHROPIC_API_KEY not set in env (.env or shell)",
-            file=sys.stderr,
-        )
-        return 2
+    # Create LLM client with automatic fallback
+    llm_client, model_name, provider = create_llm_client()
 
     scenario_set = read_scenarios(args.run_id)
     scenarios = scenario_set.scenarios
@@ -541,11 +563,9 @@ async def main_async(args: argparse.Namespace) -> int:
     persona_system_prompt = load_persona_prompt()
     client_tone = None  # v0: future enhancement — load from canonical_input.yaml
 
-    anthropic_client = AsyncAnthropic(base_url=LLM_BASE_URL)
-
     print(
         f"[runner] run_id={args.run_id} channel={args.channel_url} "
-        f"scenarios={len(scenarios)} model={PERSONA_MODEL} base_url={LLM_BASE_URL}"
+        f"scenarios={len(scenarios)} provider={provider} model={model_name}"
     )
     for i, scenario in enumerate(scenarios, 1):
         print(f"[runner] [{i}/{len(scenarios)}] {scenario.id} " f"(persona={scenario.persona_ref})")
@@ -554,7 +574,9 @@ async def main_async(args: argparse.Namespace) -> int:
                 scenario,
                 channel_url=args.channel_url,
                 run_id=args.run_id,
-                anthropic_client=anthropic_client,
+                llm_client=llm_client,
+                provider=provider,
+                model=model_name,
                 persona_system_prompt=persona_system_prompt,
                 client_tone=client_tone,
                 headed=args.headed,

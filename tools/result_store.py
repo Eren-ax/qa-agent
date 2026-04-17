@@ -128,6 +128,10 @@ class Scenario:
     phase: str = "rag"  # "rag" | "task" | "hybrid" | "human"
     # Gap 1: GL bot baseline (None when is_competitor_bot=false)
     gl_bot_baseline: Optional[GlBotBaseline] = None
+    # v2: Mock data context (order_id, phone, etc. for personas to use)
+    mock_context: Optional[dict[str, Any]] = None
+    # v2: Source phrases from patterns.json (for persona to mimic style)
+    source_phrases: Optional[list[str]] = None
 
 
 @dataclass
@@ -320,16 +324,16 @@ class RunAggregate:
     """
 
     # Input-side
-    engagement_rate: float  # sop-agent data basis (관여율)
+    engagement_rate: float  # sop-agent data basis (관여율) [레거시: scenario_coverage와 동일]
     noise_rate: float  # noise consultations / total
     scenario_weight_sum: float  # Σw of non-OOS, non-excluded scenarios
 
     # Output-side
-    resolution_rate: float  # (해결률)
+    resolution_rate: float  # (해결률) [레거시: alf_resolution_rate와 동일]
     scenario_engagement_rate: float  # legacy: per-scenario ALF engagement
 
     # Combined
-    coverage: float  # engagement_rate × resolution_rate (커버리지)
+    coverage: float  # engagement_rate × resolution_rate (커버리지) [레거시: actual_coverage와 동일]
 
     # OOS
     oos_count: int
@@ -340,6 +344,13 @@ class RunAggregate:
     by_intent: list[dict[str, Any]]
     by_difficulty: dict[str, dict[str, Any]]  # happy/unhappy/edge breakdown
     failure_mode_dist: dict[str, int]
+
+    # ---- 새로운 3단계 지표 (2026-04-16 투명성 개선) ----
+    # 참고: 즉시 에스컬레이션(engaged=False) 과대 계상 버그 수정
+    scenario_coverage: Optional[float] = None  # 시나리오가 실제 상담의 몇 %를 대변하는가
+    alf_engagement_rate: Optional[float] = None  # ALF가 실질적 답변을 시도한 비율 (engaged=True)
+    alf_resolution_rate: Optional[float] = None  # 답변 시도 중 성공한 비율
+    actual_coverage: Optional[float] = None  # 최종 자동화 커버리지 (3단계 곱)
 
     # Phase-split scoring (Gap 2)
     by_phase: dict[str, dict[str, Any]] = field(default_factory=dict)

@@ -1,13 +1,18 @@
 ---
 name: qa-agent
-description: End-to-end ALF QA pipeline — sop-agent 분석 → 시나리오 생성 → ALF 테스트 → 채점 → 클라이언트 리포트(md + 슬라이드 HTML) 산출. storage/runs/<run_id>/에 전체 아티팩트 적재.
+description: End-to-end ALF QA pipeline — sop-agent 분석 → 통계적 미러링 시나리오 생성 → ALF 테스트 → 3단계 투명 지표 채점 → 클라이언트 리포트(md + 슬라이드 HTML) 산출. storage/runs/<run_id>/에 전체 아티팩트 적재.
 ---
 
-# qa-agent — Orchestration Spec
+# qa-agent — Orchestration Spec (v2: Statistical Mirroring)
 
 You are the **qa-agent orchestrator**. Your job is to take a test channel URL
 and a sop-agent results directory, then produce a complete v0-schema run
 under `storage/runs/<run_id>/`.
+
+**v2 핵심 개선 (2026-04-16)**:
+1. **통계적 미러링 (Statistical Mirroring)**: 시나리오가 실제 90일 상담 데이터의 정확한 통계적 복제
+2. **3단계 투명 지표**: scenario_coverage × alf_engagement_rate × alf_resolution_rate = actual_coverage
+3. **즉시 에스컬레이션 버그 수정**: engaged=False를 관여율에서 제외하여 과대 계상 방지
 
 You compose four prompts and three Python tools. Do not improvise the
 pipeline shape — follow phases 1-4 below in order. Each phase has a
@@ -37,7 +42,7 @@ Out of scope (route to a different tool):
 | `channel_url` | ask the user; example: `https://vqnol.channel.io` |
 | `sop_results_dir` | ask the user; example: `~/sop-agent/results/<client>/` (sop-agent v2 format) |
 | `is_competitor_bot` | ask: "현재 경쟁사 봇(GL 등)이 작동 중인 고객사인가요?" — GL baseline 비교 리포트 생성 여부 결정 |
-| `coverage_mode` | ask: "어떤 범위를 테스트할까요?" — **`rag_only`** (지식만, Task 세팅 전) / `channel_only` (지식+승인노드) / `full` (지식+Task 전체). Default: **`rag_only`** |
+| `coverage_mode` | ask: "어떤 범위를 테스트할까요?" — **`channel_only`** (지식+승인노드, 기본값) / `rag_only` (지식만, Task 세팅 전) / `full` (지식+Task 전체). Default: **`channel_only`** |
 | `alf_task_json_path` | optional; ask "ALF 태스크 JSON 있으세요?" — if present, use `<sop_results_dir>/04_tasks_json/*.json` (v2 primary); fallback to `04_tasks/*.md` |
 | `target_total` | optional; default **25** |
 | `headed` | optional; default **false** (headless). Use `true` only for debugging. |
@@ -161,28 +166,50 @@ ConfigSnapshot(
 )
 ```
 
-**Phase 2.2 — scenarios.json**
+**Phase 2.2 — scenarios.json (통계적 미러링)**
 
 **Writes**: `storage/runs/<run_id>/scenarios.json`
 **Prompt**: `prompts/generate_scenarios.md`
 **Tool**: `tools.result_store.write_scenarios()`
 
+**v2 핵심 원칙**:
+- **인텐트 비율 = 실제 상담 비율**: 각 인텐트의 estimated_records를 기반으로 정확히 할당
+- **난이도 비율 = 실제 유효 비율**: OOS 제외한 실제 데이터에서 Happy/Edge/Unhappy 비율 계산
+- **액션 중심 평가**: task_called (API 호출 정확도) + llm_judge (특정 정책 안내)
+
 Steps:
-1. Apply `generate_scenarios.md` with three explicit context blocks:
-   - `canonical`: the full canonical YAML from Phase 1.
-   - `personas`: the **persona archetype catalog table** (the markdown
-     table near the top of `persona_archetypes.md` listing
-     `persona_ref / one-liner / recommended share`). This is sufficient —
-     do not pass full archetype bodies, the prompt only needs names +
-     shares for distribution rules.
-   - `target_total`: the integer.
-2. The prompt emits raw JSON. Parse and validate against `ScenarioSet`
-   dataclass: every scenario must satisfy the v0 schema (all required
-   fields, valid persona_ref ∈ five-archetype pool, success_criteria
-   non-empty, IDs unique).
-3. **If validation fails**, re-invoke the prompt once with the validation
+1. **통계 추출** (canonical YAML에서):
+   ```python
+   # 인텐트별 비중 계산
+   total_records = sum(i["records"] for i in canonical["intents"])
+   intent_allocation = {
+       i["id"]: round(i["records"] / total_records * target_total)
+       for i in canonical["intents"]
+   }
+   
+   # 난이도 비율 계산 (patterns.json 또는 metadata.json에서)
+   # Happy: 정형화된 프로세스 (재입고, 멤버십 등)
+   # Edge: 복잡/경계 (Context Switching, 파라미터 오류)
+   # Unhappy: 감정적 불만 (AS, 불량 신고 등)
+   ```
+
+2. Apply `generate_scenarios.md` with explicit context:
+   - `canonical`: full canonical YAML from Phase 1
+   - `personas`: persona archetype catalog table
+   - `target_total`: integer
+   - **NEW**: `intent_allocation`: 인텐트별 정확한 시나리오 개수
+   - **NEW**: `difficulty_distribution`: 전체 난이도 비율 (Happy/Edge/Unhappy)
+
+3. **검증 규칙**:
+   - 인텐트별 할당 개수가 정확히 일치하는가?
+   - 난이도 비율이 ±10% 이내인가?
+   - 모든 시나리오가 v0 스키마를 만족하는가?
+   - success_criteria 타입이 올바른가? (RAG → llm_judge, Task → task_called)
+
+4. **If validation fails**, re-invoke the prompt once with the validation
    error appended as feedback. If it fails twice, stop and report.
-4. Persist via `write_scenarios(run_id, scenario_set)`.
+
+5. Persist via `write_scenarios(run_id, scenario_set)`.
 
 Display the coverage summary (from `generation_note`) to the user before
 proceeding to Phase 3.
@@ -305,21 +332,30 @@ After all scenarios complete:
 3. Tell the user the next step: "scoring-agent을 돌리려면 run_id
    `<run_id>`를 사용하세요" (scoring-agent is a separate skill).
 
-### Phase 5 — Score
+### Phase 5 — Score (3단계 투명 지표)
 
 **Reads**: `scenarios.json`, `transcripts.jsonl`, `config_snapshot.json`
 **Writes**: `scores.json`, `report.md`
 **Tool**: `tools.scoring_agent`
 
+**v2 핵심 개선**:
+- ❌ **기존 버그**: engaged=False(즉시 에스컬레이션)도 관여율에 포함 → 과대 계상
+- ✅ **수정**: engaged=True만 계산 → 정확한 측정
+- ✅ **3단계 분리**: scenario_coverage × alf_engagement_rate × alf_resolution_rate
+
 Steps:
 1. Ensure `config_snapshot.json`에 아래 필드가 있는지 확인:
    - `extra.total_records` — sop-agent pipeline_summary 또는 patterns.json에서 추출
+   - `extra.noise_rate` — OOS 비율 (기본값: 0.1284 for 벨리에)
    - `extra.intent_pattern_coverage` — 각 intent의 패턴별 볼륨 가중 커버리지 비율
    
    이 필드들이 없으면 직접 산출하여 config_snapshot에 추가:
    
    ```
-   intent_pattern_coverage 산출 방법:
+   noise_rate 산출:
+   - patterns.json metadata.noise_clusters 개수 / total_clusters
+   
+   intent_pattern_coverage 산출:
    1. patterns.json에서 각 클러스터의 패턴 frequency × cluster_size = projected volume
    2. 클러스터를 canonical intent에 매핑
    3. 각 intent 내에서: 시나리오가 커버하는 패턴의 projected volume 합 / 전체 projected volume 합
@@ -331,19 +367,45 @@ Steps:
    ```
 
 3. 산출물 확인:
-   - `scores.json` — per-scenario 판정 + run-level aggregate
-   - `report.md` — 내부 상세 리포트 (시나리오별 criterion pass/fail)
+   - `scores.json` — per-scenario 판정 + run-level aggregate (**3단계 지표 포함**)
+   - `report.md` — 내부 상세 리포트 (시나리오별 criterion pass/fail + 3단계 지표 표)
 
-4. 핵심 수치를 사용자에게 보고:
+4. **3단계 지표 핵심 수치**를 사용자에게 보고:
+   ```
+   1️⃣ scenario_coverage (시나리오 커버리지):
+      = Σ(effective_weight) / (1 - noise_rate)
+      → 이 시나리오 세트가 실제 상담의 몇 %를 대변하는가?
+   
+   2️⃣ alf_engagement_rate (ALF 실질 관여율):
+      = Σ(engaged=True의 effective_weight) / Σ(effective_weight)
+      → 대변하는 상담 중 ALF가 실질적 답변을 시도한 비율 (즉시 에스컬레이션 제외)
+   
+   3️⃣ alf_resolution_rate (ALF 해결률):
+      = Σ(resolved=True의 effective_weight) / Σ(engaged=True의 effective_weight)
+      → 답변을 시도한 것 중 성공 기준을 통과한 비율
+   
+   ✅ actual_coverage (최종 자동화 커버리지):
+      = scenario_coverage × alf_engagement_rate × alf_resolution_rate
+      → 실제 월간 자동화 가능 비율
+   ```
+
+5. **추가 인사이트**:
    - **Phase 1/2 split**: Phase 1 (RAG 즉시) vs Phase 2 (Task 배포 후) 커버리지 분리 측정
-     - coverage_mode=rag_only → Phase 1만 측정
-     - coverage_mode=full → Phase 1 + Phase 2 모두 측정
    - **GL봇 대비 비교** (gl_bot_baseline 있는 경우):
      - GL봇 해결률 (gl_resolution) vs ALF 해결률 → ×N배 개선 지표
-     - "GL 3.5% → ALF 28% = ×8배 improvement" 형태로 비즈니스 임팩트 정량화
-   - 커버리지, 관여율, 해결률 (volume-weighted 기준)
-   - failure_mode 분포
-   - 난이도별 해결률
+   - **인텐트별 상세**: 각 인텐트의 engagement_rate, resolution_rate, actual_coverage
+   - **난이도별 해결률**: Happy/Edge/Unhappy 각각의 해결률
+   - **failure_mode 분포**: not_engaged, judge_fail, timeout 등
+
+6. **월간 예측** (config_snapshot.extra.total_records 기반):
+   ```
+   총 월간 상담:           837건 (예시)
+   유효 상담 (OOS 제외):   729건
+   시나리오 커버 범위:     729건 (scenario_coverage = 100%)
+   ALF 답변 시도:          621건 (alf_engagement_rate = 85%)
+   ✅ ALF 자동 해결:       440건 (alf_resolution_rate = 71%)
+   ⏭️  매니저 에스컬레이션: 397건
+   ```
 
 ### Phase 6 — Client report
 

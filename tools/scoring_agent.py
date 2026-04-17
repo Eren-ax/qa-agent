@@ -42,9 +42,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
+from tools.llm_client import create_llm_client, call_llm, ProviderType
 from tools.result_store import (
     SCHEMA_VERSION,
     CriterionResult,
@@ -142,14 +142,16 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 async def call_judge(
-    client: AsyncAnthropic,
+    client,  # AsyncAnthropic-compatible client
+    provider: ProviderType,
+    model: str,
     *,
     system_prompt: str,
     user_prompt: str,
 ) -> tuple[dict[str, Any], float]:
     t0 = time.time()
     response = await client.messages.create(
-        model=JUDGE_MODEL,
+        model=model,
         max_tokens=JUDGE_MAX_TOKENS,
         temperature=JUDGE_TEMPERATURE,
         system=system_prompt,
@@ -293,7 +295,9 @@ async def score_scenario(
     scenario: Scenario,
     transcript: Transcript,
     *,
-    client: AsyncAnthropic,
+    client,  # AsyncAnthropic-compatible client
+    provider: ProviderType,
+    model: str,
     judge_system_prompt: str,
     coverage_mode: str | None,
 ) -> ScenarioScore:
@@ -308,6 +312,8 @@ async def score_scenario(
     try:
         verdict, latency = await call_judge(
             client,
+            provider,
+            model,
             system_prompt=judge_system_prompt,
             user_prompt=user_prompt,
         )
@@ -781,10 +787,6 @@ def render_report(run_score: RunScore, config_extra: dict[str, Any]) -> str:
 
 
 async def main_async(args: argparse.Namespace) -> int:
-    if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
-        print("[scorer] ANTHROPIC_API_KEY not set", file=sys.stderr)
-        return 2
-
     scenario_set = read_scenarios(args.run_id)
     transcripts = {t.scenario_id: t for t in read_transcripts(args.run_id)}
     config = read_config_snapshot(args.run_id)
@@ -804,13 +806,19 @@ async def main_async(args: argparse.Namespace) -> int:
         print(f"[scorer] dry-run: would score {len(scenarios) - len(missing)} scenarios " f"for run {args.run_id}")
         return 0
 
+    # Initialize LLM client with fallback
+    try:
+        client, model_name, provider = create_llm_client()
+    except RuntimeError as e:
+        print(f"[scorer] {e}", file=sys.stderr)
+        return 2
+
     judge_system_prompt = JUDGE_PROMPT_FILE.read_text(encoding="utf-8")
-    client = AsyncAnthropic(base_url=LLM_BASE_URL)
     coverage_mode = config.extra.get("qa_target_mode") or config.extra.get("coverage_mode")
 
     print(
         f"[scorer] run_id={args.run_id} scenarios={len(scenarios)} "
-        f"judge={JUDGE_MODEL} base_url={LLM_BASE_URL}"
+        f"judge={model_name} provider={provider}"
     )
 
     scores: list[ScenarioScore] = []
@@ -847,6 +855,8 @@ async def main_async(args: argparse.Namespace) -> int:
             scenario,
             transcript,
             client=client,
+            provider=provider,
+            model=model_name,
             judge_system_prompt=judge_system_prompt,
             coverage_mode=coverage_mode,
         )
@@ -877,7 +887,7 @@ async def main_async(args: argparse.Namespace) -> int:
         schema_version=SCHEMA_VERSION,
         run_id=args.run_id,
         scored_at=utcnow_iso(),
-        judge_model=JUDGE_MODEL,
+        judge_model=f"{provider}/{model_name}",
         judge_prompt_version=JUDGE_PROMPT_VERSION,
         scores=scores,
         aggregate=agg,
