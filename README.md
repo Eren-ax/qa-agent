@@ -1,6 +1,11 @@
-# alf-qa-agent
+# alf-qa-agent (v2: Statistical Mirroring)
 
 ALF(채널톡 AI Agent) 응답 품질을 자동 측정하고, 고객사 대상 성과 리포트를 산출하는 도구.
+
+**v2 핵심 개선 (2026-04-16)**:
+1. **통계적 미러링**: 시나리오가 실제 90일 상담 데이터의 정확한 통계적 복제
+2. **3단계 투명 지표**: scenario_coverage × alf_engagement_rate × alf_resolution_rate = actual_coverage
+3. **즉시 에스컬레이션 버그 수정**: engaged=False를 관여율에서 제외하여 과대 계상 방지
 
 ## 입력
 
@@ -50,10 +55,7 @@ Phase 4. Summarize ─── 실행 결과 요약
     │
     ▼
 Phase 5. Score ─────── scores.json + report.md (AI Judge 채점)
-    │
-    ▼
-Phase 6. Report ────── report_client.md (비즈 리포트)
-                       report_slides.html (발표 슬라이드)
+                       report_client.html (고객용 HTML 프레젠테이션)
 ```
 
 모든 아티팩트는 `storage/runs/<run_id>/` 아래에 적재됩니다.
@@ -70,11 +72,12 @@ Phase 6. Report ────── report_client.md (비즈 리포트)
 
 ```
 tools/
-  chat_driver.py       Playwright 기반 채널톡 ALF 채팅 드라이버
-  scenario_runner.py   시나리오 자동 실행 (페르소나 LLM + 드라이버)
-  scoring_agent.py     AI Judge 채점 + 집계 + 리포트 생성
-  result_store.py      v0 스키마 데이터 I/O (모든 아티팩트의 단일 진실 소스)
-  cli.py               대화형 CLI (수동 테스트용)
+  chat_driver.py            Playwright 기반 채널톡 ALF 채팅 드라이버
+  scenario_runner.py        시나리오 자동 실행 (페르소나 LLM + 드라이버)
+  scoring_agent.py          AI Judge 채점 + 집계 + 리포트 생성
+  report_html_generator.py  고객용 HTML 프레젠테이션 생성 (ChannelTalk UI 포함)
+  result_store.py           v0 스키마 데이터 I/O (모든 아티팩트의 단일 진실 소스)
+  cli.py                    대화형 CLI (수동 테스트용)
 
 prompts/
   normalize_sop.md     sop-agent 결과 → canonical YAML 변환 규칙
@@ -218,10 +221,16 @@ storage/runs/r-20260414-belier25/
 ├── scenarios.json          # 31개 시나리오 (happy/unhappy/edge/oos)
 ├── transcripts.jsonl       # ALF 대화 기록
 ├── scores.json             # AI Judge 채점 결과
-├── report.md               # 내부 상세 리포트
-├── report_client.md        # 고객사 대상 비즈 리포트
-└── report_slides.html      # 발표 슬라이드 (브라우저에서 열기)
+├── report.md               # 내부 상세 리포트 (마크다운)
+└── report_client.html      # 고객사 대상 HTML 프레젠테이션 (브라우저에서 열기)
 ```
+
+**report_client.html 특징:**
+- ChannelTalk 위젯 UI로 실제 테스트 대화 전문 표시
+- 2열 grid 레이아웃으로 한 화면에 여러 대화 예시
+- 스크롤 가능한 대화창으로 전체 턴 확인 가능
+- Phase 1/Phase 2 관여율 및 주요 지표 요약
+- 키보드 화살표로 슬라이드 네비게이션
 
 ## 설계 결정
 

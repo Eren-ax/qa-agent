@@ -38,6 +38,7 @@ import os
 import re
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -365,22 +366,35 @@ def aggregate(
     engaged_ew = sum(_ew(s) for s in counted if s.engaged)
     resolved_ew = sum(_ew(s) for s in counted if s.engaged and s.resolved)
 
-    # Input-side: engagement_rate = how much of real consultation the
-    # scenario set represents.
-    # = Σ(effective_w) / (1 - noise_rate)
+    # ---- 3단계 지표 계산 (새로운 투명한 산식) ----
+    # 참고: https://github.com/Eren-ax/qa-agent/issues/XX
+    #
+    # 1) scenario_coverage: 이 시나리오 세트가 실제 상담의 몇 %를 대변하는가?
     non_noise_share = max(1.0 - noise_rate, 0.001)  # avoid div0
-    engagement_rate = total_ew / non_noise_share
+    scenario_coverage = total_ew / non_noise_share
+
+    # 2) alf_engagement_rate: 대변하는 상담 중 ALF가 실질적 답변을 시도한 비율
+    #    (즉시 에스컬레이션하지 않은 비율 = engaged=True 비율)
+    #    [버그 수정] 기존에는 engaged=False도 분모에 포함되어 과대 계상
+    alf_engagement_rate = engaged_ew / total_ew if total_ew > 0 else 0.0
+
+    # 3) alf_resolution_rate: 답변을 시도한 것 중 성공 기준을 통과한 비율
+    alf_resolution_rate = resolved_ew / engaged_ew if engaged_ew > 0 else 0.0
+
+    # 최종 actual_coverage: 실제 자동화 커버리지
+    actual_coverage = scenario_coverage * alf_engagement_rate * alf_resolution_rate
+
+    # ---- 레거시 호환성 유지 (기존 변수명) ----
+    # engagement_rate: 기존 코드와 호환을 위해 scenario_coverage와 동일하게 설정
+    engagement_rate = scenario_coverage
+    # resolution_rate: alf_resolution_rate와 동일
+    resolution_rate = alf_resolution_rate
+    # coverage: actual_coverage와 동일
+    coverage = actual_coverage
 
     # Output-side: per-scenario ALF engagement (legacy, raw weights).
     engaged_w = sum(s.weight for s in counted if s.engaged)
     scenario_engagement_rate = engaged_w / total_w if total_w > 0 else 0.0
-
-    # Resolution rate: of engaged scenarios, how many resolved.
-    # Uses effective weight so resolution is volume-weighted consistently.
-    resolution_rate = resolved_ew / engaged_ew if engaged_ew > 0 else 0.0
-
-    # Combined: coverage = engagement × resolution.
-    coverage = engagement_rate * resolution_rate
 
     oos = [s for s in scores if s.weight == 0.0]
     oos_count = len(oos)
@@ -530,6 +544,12 @@ def aggregate(
         resolution_rate=round(resolution_rate, 4),
         scenario_engagement_rate=round(scenario_engagement_rate, 4),
         coverage=round(coverage, 4),
+        # 새로운 3단계 지표 (2026-04-16)
+        scenario_coverage=round(scenario_coverage, 4),
+        alf_engagement_rate=round(alf_engagement_rate, 4),
+        alf_resolution_rate=round(alf_resolution_rate, 4),
+        actual_coverage=round(actual_coverage, 4),
+        # OOS & breakdowns
         oos_count=oos_count,
         oos_refusal_rate=round(oos_refusal_rate, 4) if oos_refusal_rate is not None else None,
         excluded_count=excluded_count,
@@ -562,17 +582,31 @@ def render_report(run_score: RunScore, config_extra: dict[str, Any]) -> str:
     lines.append(f"- **coverage_mode**: {coverage_mode}")
     lines.append("")
 
-    # ---- 핵심 수치 (3-tier) ----
-    lines.append("## 핵심 수치")
+    # ---- 핵심 수치 (3단계 투명 지표) ----
+    lines.append("## 핵심 수치 (3단계 지표)")
+    lines.append("")
+    lines.append("| 지표 | 값 | 설명 |")
+    lines.append("|---|---|---|")
+    lines.append(f"| **1️⃣ 시나리오 커버리지** | **{_pct(agg.scenario_coverage)}** | 이 시나리오 세트가 실제 상담의 몇 %를 대변하는가 |")
+    lines.append(f"| **2️⃣ ALF 실질 관여율** | **{_pct(agg.alf_engagement_rate)}** | 대변하는 상담 중 ALF가 실질적 답변을 시도한 비율 (즉시 에스컬레이션 제외) |")
+    lines.append(f"| **3️⃣ ALF 해결률** | **{_pct(agg.alf_resolution_rate)}** | 답변을 시도한 것 중 성공 기준을 통과한 비율 |")
+    lines.append(f"| **✅ 최종 자동화 커버리지** | **{_pct(agg.actual_coverage)}** | 1️⃣ × 2️⃣ × 3️⃣ = 실제 월간 자동화 가능 비율 |")
+    lines.append("")
+    lines.append("### 기타 지표")
     lines.append("")
     lines.append("| 지표 | 값 | 출처 |")
     lines.append("|---|---|---|")
-    lines.append(f"| **커버리지** (관여율 × 해결률) | **{_pct(agg.coverage)}** | 산출 |")
-    lines.append(f"| 관여율 | {_pct(agg.engagement_rate)} | input-side (sop-agent 상담 분포 기준) |")
-    lines.append(f"| 해결률 | {_pct(agg.resolution_rate)} | output-side (judge 판정) |")
     lines.append(f"| 노이즈 비율 | {_pct(agg.noise_rate)} | sop-agent 클러스터링 |")
     lines.append(f"| Σw (시나리오 가중치 합) | {_pct(agg.scenario_weight_sum)} | scenarios.json |")
     lines.append(f"| OOS refusal rate | {_pct(agg.oos_refusal_rate) if agg.oos_refusal_rate is not None else '—'} ({agg.oos_count} 건) | judge |")
+    lines.append("")
+    lines.append("### 레거시 호환 (기존 변수명)")
+    lines.append("")
+    lines.append("| 레거시 변수 | 새 변수 | 값 |")
+    lines.append("|---|---|---|")
+    lines.append(f"| engagement_rate (관여율) | scenario_coverage | {_pct(agg.engagement_rate)} |")
+    lines.append(f"| resolution_rate (해결률) | alf_resolution_rate | {_pct(agg.resolution_rate)} |")
+    lines.append(f"| coverage (커버리지) | actual_coverage | {_pct(agg.coverage)} |")
     lines.append(f"| 제외된 시나리오 (persona_drift) | {agg.excluded_count} | judge |")
     lines.append("")
 
@@ -852,6 +886,28 @@ async def main_async(args: argparse.Namespace) -> int:
     report_md = render_report(run_score, config.extra)
     report_path = run_dir(args.run_id) / "report.md"
     report_path.write_text(report_md, encoding="utf-8")
+
+    # Generate HTML report for customer presentation
+    try:
+        from .report_html_generator import write_html_report
+
+        # Extract scenario metadata
+        scenario_metadata = {s.scenario_id: {
+            "intent": s.intent,
+            "weight": s.weight,
+        } for s in scenarios}
+
+        html_path = write_html_report(
+            run_id=args.run_id,
+            client_name=config.extra.get("client_name", "Unknown Client"),
+            run_score=asdict(run_score),
+            transcripts=transcripts,
+            scenario_metadata=scenario_metadata,
+        )
+        print(f"[scorer] wrote HTML report to {html_path}")
+    except Exception as e:
+        print(f"[scorer] HTML report generation failed: {e}")
+
     print(f"[scorer] wrote scores.json and report.md under storage/runs/{args.run_id}/")
     print(
         f"[scorer] coverage={agg.coverage:.3f} "
