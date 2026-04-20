@@ -341,6 +341,37 @@ async def score_scenario(
     return _score_from_judge(scenario, transcript, verdict, latency)
 
 
+# ---- normalization ----------------------------------------------------------
+
+
+def normalize_scenario_weights(scenarios: list[Scenario]) -> list[Scenario]:
+    """Normalize scenario weights to sum to 1.0 (0-100% range).
+
+    This fixes Gap 4: scenarios generated with weight=1.0 per scenario
+    (25 scenarios × 1.0 = 25.0 = 2500%) need normalization.
+
+    Args:
+        scenarios: List of scenarios with raw weights
+
+    Returns:
+        Same list with weights normalized to sum=1.0
+    """
+    in_scope = [s for s in scenarios if s.weight > 0.0]
+    total_weight = sum(s.weight for s in in_scope)
+
+    if total_weight == 0:
+        return scenarios
+
+    if abs(total_weight - 1.0) < 0.01:  # Already normalized
+        return scenarios
+
+    # Normalize in-scope scenarios
+    for s in in_scope:
+        s.weight = s.weight / total_weight
+
+    return scenarios
+
+
 # ---- aggregation ------------------------------------------------------------
 
 
@@ -792,6 +823,8 @@ async def main_async(args: argparse.Namespace) -> int:
     config = read_config_snapshot(args.run_id)
 
     scenarios = scenario_set.scenarios
+    # Gap 4 fix: Normalize weights to 0-1 range (sum=1.0)
+    scenarios = normalize_scenario_weights(scenarios)
     if args.scenario_id:
         scenarios = [s for s in scenarios if s.id == args.scenario_id]
         if not scenarios:
@@ -897,26 +930,44 @@ async def main_async(args: argparse.Namespace) -> int:
     report_path = run_dir(args.run_id) / "report.md"
     report_path.write_text(report_md, encoding="utf-8")
 
-    # Generate HTML report for customer presentation
+    # Generate HTML reports for customer presentation
     try:
         from .report_html_generator import write_html_report
+        from .integrated_report_generator import write_integrated_report
 
         # Extract scenario metadata
-        scenario_metadata = {s.scenario_id: {
+        scenario_metadata = {s.id: {
             "intent": s.intent,
             "weight": s.weight,
         } for s in scenarios}
 
-        html_path = write_html_report(
+        # Slides HTML (existing)
+        slides_path = write_html_report(
             run_id=args.run_id,
             client_name=config.extra.get("client_name", "Unknown Client"),
             run_score=asdict(run_score),
-            transcripts=transcripts,
+            transcripts=[asdict(t) for t in transcripts.values()],
             scenario_metadata=scenario_metadata,
         )
-        print(f"[scorer] wrote HTML report to {html_path}")
+        print(f"[scorer] wrote slides HTML to {slides_path}")
+
+        # Integrated report HTML (new - Gap 1)
+        integrated_path = write_integrated_report(
+            run_id=args.run_id,
+            client_name=config.extra.get("client_name", "Unknown Client"),
+            run_score=asdict(run_score),
+            transcripts=[asdict(t) for t in transcripts.values()],
+            scenario_metadata=scenario_metadata,
+            monthly_volume=config.extra.get("monthly_consultation_volume", 10000),
+            old_bot_name=config.extra.get("old_bot_name"),
+            predicted_phase1=config.extra.get("predicted_phase1_coverage"),
+            predicted_phase2=config.extra.get("predicted_phase2_coverage"),
+        )
+        print(f"[scorer] wrote integrated report to {integrated_path}")
     except Exception as e:
-        print(f"[scorer] HTML report generation failed: {e}")
+        print(f"[scorer] HTML report generation failed: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
 
     print(f"[scorer] wrote scores.json and report.md under storage/runs/{args.run_id}/")
     print(

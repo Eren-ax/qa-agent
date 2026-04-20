@@ -42,18 +42,21 @@ def render_channeltalk_widget(
     messages_html = []
     for turn in turns:
         # User message
+        user_msg = turn.get("user_message", "") if isinstance(turn, dict) else turn.user_message
         messages_html.append(f'''
                                 <div class="ct-msg user">
-                                    <div class="ct-bubble">{turn.user_message}</div>
+                                    <div class="ct-bubble">{user_msg}</div>
                                 </div>''')
 
         # ALF messages
-        if turn.alf_messages:
+        alf_messages = turn.get("alf_messages") if isinstance(turn, dict) else turn.alf_messages
+        if alf_messages:
             messages_html.append('''
                                 <div class="ct-bot-name">ALF</div>''')
-            for alf_msg in turn.alf_messages:
+            for alf_msg in alf_messages:
                 # Replace newlines with <br> for display
-                text = alf_msg.text.replace('\n', '<br>')
+                text = alf_msg.get("text", "") if isinstance(alf_msg, dict) else alf_msg.text
+                text = text.replace('\n', '<br>')
                 messages_html.append(f'''
                                 <div class="ct-msg bot">
                                     <div class="ct-avatar">A</div>
@@ -112,10 +115,10 @@ def generate_html_report(
     p2 = by_phase.get("_phase2_summary", {})
 
     # Convert transcripts to dict for easy lookup
-    transcript_map = {t.scenario_id: t for t in transcripts}
+    transcript_map = {t["scenario_id"]: t for t in transcripts}
 
     # Group scenarios by intent (cluster)
-    scenarios_by_intent: dict[str, list[tuple[str, Transcript]]] = {}
+    scenarios_by_intent: dict[str, list[tuple[str, dict]]] = {}
     for scenario_id, metadata in scenario_metadata.items():
         intent = metadata.get("intent", "기타")
         if scenario_id in transcript_map:
@@ -131,10 +134,11 @@ def generate_html_report(
             metadata = scenario_metadata[scenario_id]
             weight = metadata.get("weight", 0)
             label = f"✓ {intent} ({_pct(weight)})"
-            note = f"✓ {len(transcript.turns)}턴 대화로 완료"
+            turns = transcript.get("turns", []) if isinstance(transcript, dict) else transcript.turns
+            note = f"✓ {len(turns)}턴 대화로 완료"
 
             widget = render_channeltalk_widget(
-                turns=transcript.turns,
+                turns=turns,
                 max_turns=None,  # Show all turns
                 body_bg="#EDEEF2",
                 label=label,
@@ -688,7 +692,7 @@ def generate_html_report(
 
 
 def write_html_report(run_id: str, **kwargs) -> Path:
-    """Write HTML report to storage/runs/<run_id>/report_client.html.
+    """Write HTML report to storage/runs/<run_id>/report_slides.html.
 
     Args:
         run_id: QA run ID
@@ -698,6 +702,6 @@ def write_html_report(run_id: str, **kwargs) -> Path:
         Path to written HTML file
     """
     html = generate_html_report(run_id=run_id, **kwargs)
-    output_path = run_dir(run_id) / "report_client.html"
+    output_path = run_dir(run_id) / "report_slides.html"
     output_path.write_text(html, encoding="utf-8")
     return output_path
