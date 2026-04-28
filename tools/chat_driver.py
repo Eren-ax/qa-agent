@@ -149,11 +149,26 @@ class PlaywrightDriver(ChatDriver):
 
     async def open(self, channel_url: str) -> list[AlfMessage]:
         self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.launch(headless=self._headless, slow_mo=self._slow_mo_ms)
-        self._ctx = await self._browser.new_context()
+        # Launch with args to avoid bot detection
+        launch_args = ["--disable-blink-features=AutomationControlled"]
+        self._browser = await self._pw.chromium.launch(
+            headless=self._headless,
+            slow_mo=self._slow_mo_ms,
+            args=launch_args,
+        )
+        # Set realistic user agent to avoid headless detection
+        self._ctx = await self._browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+        )
         self._page = await self._ctx.new_page()
 
         await self._page.goto(channel_url, wait_until="domcontentloaded")
+
+        # Wait for Channel.io widget script to load and render contact button.
+        # In headless mode, the widget may take 5-15 seconds to fully initialize.
+        # Poll for contact button appearance before attempting click.
+        await self._wait_for_contact_button_rendered(timeout=20.0)
 
         # Landing page: click "문의하기" to enter the chat room.
         await self._click_contact_button()
@@ -271,6 +286,30 @@ class PlaywrightDriver(ChatDriver):
         if self._page is None:
             raise RuntimeError("driver not opened; call .open(url) first")
         return self._page
+
+    async def _wait_for_contact_button_rendered(self, timeout: float) -> None:
+        """Poll until contact button appears in DOM (widget script loaded).
+
+        Channel.io widget loads asynchronously — button won't exist until
+        the widget script executes. In headless mode this can take 10-15s.
+        """
+        page = self._require_page()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for selector in CONTACT_BUTTON_CANDIDATES:
+                try:
+                    locator = page.locator(selector).first
+                    if await locator.count() > 0:
+                        # Button exists in DOM — return immediately
+                        return
+                except Exception:  # noqa: BLE001
+                    continue
+            await asyncio.sleep(0.5)
+        # Timeout reached — button never appeared
+        raise RuntimeError(
+            f"contact button did not render within {timeout}s; "
+            "widget script may have failed to load in headless mode"
+        )
 
     async def _click_contact_button(self) -> None:
         page = self._require_page()
