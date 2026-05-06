@@ -20,6 +20,7 @@ real customer consultation patterns from the past 90 days.
 | `target_total` | integer (default: 25) | 총 시나리오 개수 |
 | **NEW**: `intent_allocation` | 통계 계산 | 각 인텐트별 정확한 시나리오 개수 |
 | **NEW**: `difficulty_distribution` | 통계 계산 | 전체 난이도 비율 (Happy/Edge/Unhappy) |
+| **v2.1**: `style_bank` | userchat_style_bank.py (선택) | 실제 유저챗 발화 스타일 레퍼런스 |
 
 ### intent_allocation 형식
 ```json
@@ -210,6 +211,63 @@ oos_count = 1개 (별도)
 # ❌ 틀린 예: AI가 창작한 문구
 "initial_message": "안녕하세요, 재입고 일정을 알고 싶습니다."
 ```
+
+### Rule 5: Style Reference Injection (v2.1 신규)
+
+**문제**: `common_phrases`만으로는 말투의 뉘앙스(감정 온도, 구어체 특성, 문장 리듬)를 충분히 전달하기 어려움.
+
+**해결**: 시나리오 생성 시 **실제 유저챗 발화 3~5개를 few-shot 스타일 레퍼런스로 함께 제공**.
+
+#### 입력: `style_bank` (선택)
+
+```json
+{
+  "cluster_0": {
+    "label": "차란백 배송, 추가 요청, 분실 및 취소",
+    "utterances": [
+      "차란백 추가로 보내주실 수 있나요?",
+      "배송 주소 변경 가능할까요ㅠㅠ",
+      "차란백이 아직 안 왔는데 언제쯤 받을 수 있을까요?"
+    ]
+  },
+  ...
+}
+```
+
+`style_bank`가 제공된 경우, 각 시나리오 생성 시:
+
+1. 해당 인텐트의 `label`로 `style_bank`에서 매칭 클러스터 검색
+2. 매칭된 클러스터의 `utterances` 추출 (top 3개)
+3. 시나리오 프롬프트에 스타일 레퍼런스 섹션 추가:
+
+```markdown
+### 실제 고객 발화 예시 (스타일 참고용)
+
+1. "차란백 추가로 보내주실 수 있나요?"
+2. "배송 주소 변경 가능할까요ㅠㅠ"
+3. "차란백이 아직 안 왔는데 언제쯤 받을 수 있을까요?"
+
+**중요**: 위 발화들의 말투, 문장 구조, 감정 표현 방식을 그대로 따라하세요.
+- 어휘 선택 (예: "가능한가요" vs "되나요" vs "해주세요")
+- 문장 길이와 끊김
+- 이모티콘/강조 사용 패턴 (ㅠㅠ, !, ? 등)
+- 감정 온도
+```
+
+4. 이 레퍼런스 아래에 실제 시나리오 생성 지시:
+
+```markdown
+[생성할 시나리오]
+- Intent: 차란백 배송, 추가 요청, 분실 및 취소
+- Persona: polite_clear
+- Difficulty: happy
+
+위 실제 대화의 "말하는 방식"을 그대로 따라하되, 내용은 시나리오 intent에 맞게 작성하세요.
+```
+
+**Style Bank 없는 경우**: 기존 방식대로 `common_phrases`만 사용 (후방 호환성 보장).
+
+**효과**: LLM이 추상적 페르소나 지시("자연스럽게 써라")가 아니라 **구체적 예시**를 보고 스타일을 모방 → human-like 품질 향상.
 
 ---
 

@@ -381,12 +381,17 @@ async def run_one_scenario(
 
         # Handle bot form if it appeared after ALF's reply (e.g. email/phone collection).
         if await _handle_form_if_present(driver, notes_extras):
-            # After filling form, wait for the next ALF reply.
-            try:
-                form_replies = await driver.wait_reply(timeout=timeout)
-                replies.extend(form_replies)
-            except TimeoutError:
-                pass  # proceed with what we have
+            # After filling form, terminate the session immediately.
+            terminated_reason = "completed"
+            return _finalize(
+                scenario,
+                run_id,
+                started_at,
+                terminated_reason,
+                turns,
+                welcome_count,
+                notes_extras,
+            )
 
         history.append(HistoryEntry(role="user", text=scenario.initial_message))
         for r in replies:
@@ -498,11 +503,9 @@ async def run_one_scenario(
 
             # Handle bot form if it appeared after ALF's reply.
             if await _handle_form_if_present(driver, notes_extras):
-                try:
-                    form_replies = await driver.wait_reply(timeout=timeout)
-                    replies.extend(form_replies)
-                except TimeoutError:
-                    pass
+                # After filling form, terminate the session immediately.
+                terminated_reason = "completed"
+                break
 
             history.append(HistoryEntry(role="user", text=cleaned))
             for r in replies:

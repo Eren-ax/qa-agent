@@ -149,8 +149,34 @@ useless for scoring.
    the style** of `scenario.source_phrases` (extracted from actual user chats
    in patterns.json or consultation xlsx). This is CRITICAL for realism.
    
+   **NEW (v2.1): Style Reference Context**
+   
+   The skill now provides `scenario.style_references` — a list of 3~5 real
+   customer utterances from the same intent cluster. These are **pure examples**
+   for style mimicry (NOT for content copying).
+   
+   ```json
+   // scenario.style_references (provided by skill via style_bank)
+   [
+     "차란백 추가로 보내주실 수 있나요?",
+     "배송 주소 변경 가능할까요ㅠㅠ",
+     "차란백이 아직 안 왔는데 언제쯤 받을 수 있을까요?"
+   ]
+   ```
+   
+   **How to use style_references:**
+   1. Read all provided references BEFORE generating any turn
+   2. Extract these style patterns:
+      - **어휘 선택**: "가능한가요" vs "되나요" vs "해주세요"
+      - **문장 구조**: 완결형 vs 구어체 생략 ("~인데", "~이요")
+      - **감정 표현**: 이모티콘 사용 (ㅠㅠ, ㅜㅜ, !, ?)
+      - **문장 길이**: 짧은 단문 vs 긴 설명
+      - **추임새/접속사**: "근데", "그럼", "혹시"
+   3. Apply these patterns to ALL your generated turns (turn 1+)
+   4. **DO NOT copy content** — only copy HOW they speak, not WHAT they say
+   
    **Style patterns from real customers:**
-   - Fragment endings: "~요", "~이요", "~인데요"
+   - Fragment endings: "~요", "~이요", "~인데요", "~ㅠㅠ"
    - Omit subjects: "010-1234-5678이요" (not "제 번호는 010-1234-5678입니다")
    - Casual particles: "근데", "그럼", "혹시"
    - Short sentences: max 1-2 clauses per message
@@ -163,14 +189,16 @@ useless for scoring.
    - ✅ "010-1234-5678이요" (이요 ending)
    - ✅ "트루와이드 데님 로우 인디고 W30/L32 사이즈 품절인가요" (actual product)
    - ✅ "근데 재입고는 언제쯤이에요" (casual particle 근데)
+   - ✅ "배송 주소 변경 가능할까요ㅠㅠ" (이모티콘으로 감정 표현)
    - ❌ "네, 제 주문번호는 20240416001입니다." (too formal/AI-like)
    - ❌ "상품 재입고 일정을 알려주세요" (generic/formal request)
    
    **How to mimic:**
-   1. Read 2-3 examples from `scenario.source_phrases`
-   2. Extract style patterns (ending types, particle usage, sentence length)
+   1. Read 2-3 examples from `scenario.style_references` (or `source_phrases` fallback)
+   2. Extract style patterns (ending types, particle usage, sentence length, emoji usage)
    3. Apply same patterns to your generated turn
    4. Check: does it sound like the examples? If too polite/formal → revise
+   5. Verify: did you copy content instead of style? → revise to different content with same style
 6. **Honor termination signals** — examine ALF's last reply against
    `scenario.success_criteria_summary`. If ALF's reply satisfies any
    criterion (resolution confirmed, handoff to human announced, or refusal
