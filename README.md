@@ -1,102 +1,149 @@
-# alf-qa-agent (v2: Statistical Mirroring)
+# alf-qa-agent (v3: Best Practice from Clustering)
 
 ALF(채널톡 AI Agent) 응답 품질을 자동 측정하고, 고객사 대상 성과 리포트를 산출하는 도구.
 
-**v2 핵심 개선 (2026-04-16)**:
-1. **통계적 미러링**: 시나리오가 실제 90일 상담 데이터의 정확한 통계적 복제
-2. **3단계 투명 지표**: scenario_coverage × alf_engagement_rate × alf_resolution_rate = actual_coverage
-3. **즉시 에스컬레이션 버그 수정**: engaged=False를 관여율에서 제외하여 과대 계상 방지
+**v3 핵심 개선 (2026-05-08)**:
+1. **Best Practice 자동 추출**: sop-agent clustering 결과에서 cluster별 대표 케이스 자동 선정
+2. **균등 분포 샘플링**: 클러스터 크기에 비례하여 Best Practice 추출, 모든 intent 커버
+3. **품질 기반 우선순위**: CSAT, 해결 상태, 응답 시간 등 품질 지표 기반 케이스 선정
+4. **Headless 안정성**: Chrome headless detection 회피 (차란 리뉴얼 채널 대응)
+5. **시각화 리포트**: BP vs 실제 ALF 대화를 2열 레이아웃으로 나란히 비교
 
 ## 입력
 
 | 입력 | 필수 | 설명 |
 |---|---|---|
-| `sop_results_dir` | **필수** | sop-agent 분석 결과 경로 |
+| `clustered_excel` | **필수** | sop-agent Stage 1 clustering 결과 (`*_clustered.xlsx`) |
 | `channel_url` | **필수** | ALF가 세팅된 테스트 채널 URL |
-| `is_competitor_bot` | **필수** | 현재 경쟁사 봇(GL 등)이 작동 중인 고객사인지. 경쟁사 비교 리포트 여부 결정 |
-| `alf_task_json` | 선택 | ALF 태스크 JSON. 없으면 `04_tasks/*.md`에서 Mermaid 파싱 |
-| `target_total` | 선택 | 시나리오 수 (기본 25) |
+| `target_total` | 선택 | 추출할 Best Practice 케이스 수 (기본 100) |
+| `style_bank` | 선택 | 고객 발화 스타일 JSON (Layer 2/3에서 사용) |
 
 sop-agent 결과 중 사용하는 파일:
 
 ```
 <sop_results_dir>/
-├── 03_sop/metadata.json                    # 필수 — intent 목록 + 건수
-├── 02_extraction/faq.json                  # 필수 — FAQ Q/A (시나리오 seed)
-├── 02_extraction/patterns.json             # 필수 — 패턴 + frequency + common_phrases (실제 유저 발화)
-├── 02_extraction/response_strategies.json  # 권장 — escalation_triggers
-├── 04_tasks/TASK*.md                       # 선택 — 태스크 정의 fallback
-├── pipeline_summary.md                     # 권장 — 월간 건수 등
-├── data/*.xlsx                             # 선택 — 원본 상담 데이터 (추가 유저 발화 추출용)
-└── *_alf_implementation_guide.md           # 선택 — 경쟁사 수치 (없으면 데이터에서 추정)
+└── 01_clustering/
+    └── <client>_clustered.xlsx  # 필수 — 클러스터링된 상담 데이터
+        ├── cluster_id           # 클러스터 ID
+        ├── label                # 클러스터 라벨 (intent)
+        ├── category             # 카테고리
+        ├── cluster_size         # 클러스터 크기
+        ├── enhanced_text        # 고객 메시지 전문
+        ├── url                  # UserChat URL (Best Practice 원본)
+        ├── state, csat, tags    # 품질 지표
+        └── alfTriggered, time*  # ALF 작동 여부, 응답 시간
 ```
 
-**새로운 기능 (v2)**: patterns.json의 `common_phrases`와 원본 상담 xlsx를 활용하여
-실제 고객 발화 스타일을 QA 페르소나에 반영합니다. AI-like한 정중한 문장이 아니라
-"~요", "~인데요" 같은 실제 고객 말투를 모방합니다.
+**새로운 기능 (v3)**: 
+- clustering 결과에서 자동으로 Best Practice 추출 (수동 Excel 작성 불필요)
+- 클러스터 크기 비례 샘플링으로 모든 intent 균등 커버
+- 품질 점수 기반 우선순위 (해결됨 > CSAT 높음 > ALF 작동)
 
 이 입력을 받아:
-1. 실 상담 패턴 기반 QA 시나리오를 생성하고
-2. Playwright로 ALF와 실제 대화를 돌리고
-3. AI Judge로 채점한 뒤
-4. 경쟁사 봇 대비 성과 리포트 + 슬라이드를 자동 생성합니다.
+1. Cluster별 대표 Best Practice를 자동 추출하고
+2. Layer 1/2/3 전략으로 자연스러운 QA 시나리오 생성하고
+3. Playwright로 ALF와 실제 대화를 돌리고
+4. BP vs 실제 ALF 비교 리포트를 자동 생성합니다.
 
 ## 파이프라인
 
 ```
-sop-agent 분석 결과 + 테스트 채널 URL
+sop-agent clustering 결과 (*_clustered.xlsx)
     │
     ▼
-Phase 1. Normalize ─── canonical_input.yaml
+Step 1. Extract Best Practice ─── Best Practice 자동 추출
+    │                              - Cluster별 대표 케이스 선정
+    │                              - 품질 기반 우선순위
+    │                              - 볼륨 비례 샘플링
     │
     ▼
-Phase 2. Generate ──── scenarios.json (happy/unhappy/edge/oos)
-    │                   config_snapshot.json
-    ▼
-Phase 3. Execute ───── transcripts.jsonl (Playwright + 페르소나 LLM)
+Step 2. Generate Scenarios ─────── QA 시나리오 생성
+    │                              - BP → initial_message
+    │                              - Layer 1/2/3 전략
+    │                              - Style bank 활용
     │
     ▼
-Phase 4. Summarize ─── 실행 결과 요약
+Step 3. Execute QA Tests ───────── ALF 테스트 실행
+    │                              - Playwright + headless Chrome
+    │                              - Persona LLM (고객 역할)
+    │                              - transcripts.jsonl
     │
     ▼
-Phase 5. Score ─────── scores.json + report.md (AI Judge 채점)
-                       report_client.html (고객용 HTML 프레젠테이션)
+Step 4. Generate QA Report ─────── QA 리포트 생성
+                                   - BP vs 실제 ALF 비교
+                                   - 점수 산정 (10점 만점)
+                                   - HTML 시각화 리포트
 ```
 
-모든 아티팩트는 `storage/runs/<run_id>/` 아래에 적재됩니다.
+모든 아티팩트는 `storage/<run_dir>/` 아래에 적재됩니다.
+
+**상세 워크플로우**: [`docs/sop-to-qa-workflow.md`](docs/sop-to-qa-workflow.md)
 
 ## 핵심 지표
 
 | 지표 | 정의 | 산출 방식 |
 |---|---|---|
-| **관여율** | 시나리오가 실 상담의 몇 %를 대표하는가 | intent별 패턴 볼륨 가중평균 (input-side) |
-| **해결률** | ALF가 대응한 건 중 해결 비율 | AI Judge 판정, effective weight 가중 (output-side) |
-| **커버리지** | 실 상담 대비 ALF 유효 처리 비율 | 관여율 × 해결률 |
+| **QA Score** | Best Practice 대비 ALF 응답 품질 | 정확성(5) + 완결성(3) + 톤&매너(2) = 10점 만점 |
+| **성공률** | 전체 케이스 중 성공 비율 | (성공 케이스 수 / 전체 케이스 수) × 100% |
+| **평균 점수** | 결과별 평균 QA Score | 성공/부분성공/타임아웃/오류 각각의 평균 |
+| **Cluster 커버리지** | 테스트한 클러스터 비율 | (테스트 클러스터 수 / 전체 클러스터 수) × 100% |
+
+### QA 채점 기준
+
+- **정확성 (5점)**: BP와 동일한 정보 제공 (5점), 상담원 연결 제안 (3점), 오류 (0점)
+- **완결성 (3점)**: 필요한 정보 모두 포함 (3점), 부분 정보 (1-2점), 오류 (0점)
+- **톤&매너 (2점)**: 친근하고 적절한 톤 (2점), 기계적 (1점), 부적절 (0점)
+
+## 빠른 시작
+
+### 1. Best Practice 추출
+```bash
+python3 tools/best_practice_extractor.py \
+  ~/sop-agent/results/벨리에v2/01_clustering/벨리에_clustered.xlsx \
+  100
+```
+
+### 2. QA 실행 (전체 파이프라인)
+```bash
+uv run python run_bp_qa.py \
+  --clustered-excel ~/sop-agent/results/벨리에v2/01_clustering/벨리에_clustered.xlsx \
+  --channel-url https://vqnol.channel.io \
+  --output-dir storage/qa_$(date +%Y%m%d) \
+  --target-total 100
+```
+
+### 3. 결과 확인
+```bash
+# HTML 리포트 열기
+open storage/qa_20260508/QA_REPORT_*.html
+
+# 통계 확인
+cat storage/qa_20260508/QA_REPORT_*.md | grep "평균 QA Score"
+```
+
+**자세한 가이드**: [`docs/sop-to-qa-workflow.md`](docs/sop-to-qa-workflow.md)
 
 ## 디렉토리 구조
 
 ```
 tools/
-  chat_driver.py            Playwright 기반 채널톡 ALF 채팅 드라이버
-  scenario_runner.py        시나리오 자동 실행 (페르소나 LLM + 드라이버)
-  scoring_agent.py          AI Judge 채점 + 집계 + 리포트 생성
-  report_html_generator.py  고객용 HTML 프레젠테이션 생성 (ChannelTalk UI 포함)
-  result_store.py           v0 스키마 데이터 I/O (모든 아티팩트의 단일 진실 소스)
-  cli.py                    대화형 CLI (수동 테스트용)
+  best_practice_extractor.py  sop-agent clustering → Best Practice 추출
+  scenario_generator.py        BP → QA 시나리오 생성 (Layer 1/2/3)
+  chat_driver.py              Playwright 기반 채널톡 ALF 채팅 드라이버
+  scenario_runner.py          시나리오 자동 실행 (페르소나 LLM + 드라이버)
+  qa_report_generator.py      BP vs ALF 비교 리포트 생성 (HTML/MD)
+  result_store.py             데이터 스키마 + I/O
 
 prompts/
-  normalize_sop.md     sop-agent 결과 → canonical YAML 변환 규칙
-  generate_scenarios.md 시나리오 생성 규칙 (happy/unhappy/edge/oos + 패턴 기반)
-  persona_archetypes.md 5개 고정 페르소나 풀 (polite/vague/impatient/confused/adversarial)
-  judge_scenario.md    AI Judge 판정 프롬프트 (criterion별 pass/fail)
-  generate_client_report.md  클라이언트 리포트 + 슬라이드 생성 규칙
+  generate_scenarios_v2.md    시나리오 생성 프롬프트 (Layer 1/2/3)
+  persona_archetypes.md       5개 고정 페르소나 풀
+  userchat_style_bank.py      실제 고객 발화 스타일 추출
 
-skills/
-  qa-agent/SKILL.md    전체 파이프라인 오케스트레이션 스펙 (Phase 1-6)
+docs/
+  sop-to-qa-workflow.md       전체 워크플로우 가이드
+  layer-comparison.md         Layer 1/2/3 비교 분석
 
-storage/               (gitignored) run별 아티팩트
-inputs/                (gitignored) sop-agent 결과 등 입력 파일
-projects/              (gitignored) 고객사별 설정
+storage/                      (gitignored) run별 결과
 ```
 
 ## 셋업
