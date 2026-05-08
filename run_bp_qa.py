@@ -32,6 +32,7 @@ from tools.best_practice_extractor import extract_best_practices, BestPracticeCa
 from tools.llm_client import create_llm_client, ProviderType
 from tools.result_store import Scenario, Transcript
 from tools.scenario_runner import run_one_scenario, PERSONA_FILE, PERSONA_MODEL
+import pandas as pd
 
 
 # Load .env
@@ -106,6 +107,90 @@ def generate_layer3(intent: str, enhanced_text: str, max_retry: int = 2) -> str:
     return candidate
 
 
+def load_manual_bp(manual_bp_file: Path, clustered_excel: Path) -> list[BestPracticeCase]:
+    """Load manually specified Best Practice cases.
+
+    Manual BP file format (TSV or CSV):
+    - Required columns: user_chat_id or url
+    - Optional columns: intent, category
+
+    Looks up full details from clustering Excel.
+    """
+    # Read manual BP file
+    if not manual_bp_file.exists():
+        raise FileNotFoundError(f"Manual BP file not found: {manual_bp_file}")
+
+    suffix = manual_bp_file.suffix.lower()
+    if suffix == '.tsv':
+        manual_df = pd.read_csv(manual_bp_file, sep='\t')
+    elif suffix in ['.csv', '.txt']:
+        manual_df = pd.read_csv(manual_bp_file)
+    elif suffix in ['.xlsx', '.xls']:
+        manual_df = pd.read_excel(manual_bp_file)
+    else:
+        raise ValueError(f"Unsupported manual BP file format: {suffix}")
+
+    # Extract user_chat_ids
+    user_chat_ids = set()
+    if 'user_chat_id' in manual_df.columns:
+        user_chat_ids.update(manual_df['user_chat_id'].dropna().astype(str))
+    if 'url' in manual_df.columns:
+        for url in manual_df['url'].dropna():
+            # Extract ID from URL: https://desk.channel.io/.../user-chats/{id}
+            import re
+            match = re.search(r'/user-chats/([a-f0-9]+)', str(url))
+            if match:
+                user_chat_ids.add(match.group(1))
+
+    if not user_chat_ids:
+        raise ValueError("Manual BP file must contain 'user_chat_id' or 'url' column")
+
+    print(f"📋 Manual BP: {len(user_chat_ids)} user chat IDs specified")
+
+    # Load clustering data
+    if not clustered_excel.exists():
+        raise FileNotFoundError(f"Clustering Excel not found: {clustered_excel}")
+
+    cluster_df = pd.read_excel(clustered_excel)
+    cluster_df = cluster_df[cluster_df['cluster_id'].notna()].copy()
+
+    # Match by user_chat_id
+    cluster_df['id_str'] = cluster_df['id'].astype(str)
+    matched_df = cluster_df[cluster_df['id_str'].isin(user_chat_ids)]
+
+    if len(matched_df) == 0:
+        raise ValueError(f"No matching user chats found in clustering Excel. "
+                        f"Specified IDs: {list(user_chat_ids)[:5]}...")
+
+    print(f"✓ Matched {len(matched_df)}/{len(user_chat_ids)} cases in clustering data")
+
+    # Get cluster sizes
+    cluster_sizes = cluster_df.groupby('cluster_id').size()
+
+    # Convert to BestPracticeCase
+    bp_cases = []
+    for _, row in matched_df.iterrows():
+        case = BestPracticeCase(
+            user_chat_id=row['id'],
+            user_chat_url=row['url'],
+            cluster_id=int(row['cluster_id']),
+            cluster_label=row['label'] if pd.notna(row['label']) else f"Cluster {row['cluster_id']}",
+            cluster_category=row['category'] if pd.notna(row['category']) else "기타",
+            cluster_size=int(cluster_sizes[row['cluster_id']]),
+            enhanced_text=row['enhanced_text'] if pd.notna(row['enhanced_text']) else "",
+            tags=str(row['tags']).split(',') if pd.notna(row['tags']) else [],
+            priority=row['priority'] if pd.notna(row['priority']) else "medium",
+            state=row['state'] if pd.notna(row['state']) else "unknown",
+            csat=float(row['profile.csat']) if pd.notna(row['profile.csat']) else None,
+            alf_triggered=bool(row['alfTriggered']) if pd.notna(row['alfTriggered']) else False,
+            time_to_first_answer=float(row['timeToFirstAnswer']) if pd.notna(row['timeToFirstAnswer']) else None,
+            reply_count=int(row['replyCount']) if pd.notna(row['replyCount']) else 0,
+        )
+        bp_cases.append(case)
+
+    return bp_cases
+
+
 async def generate_and_test_bp_case(
     bp_case: BestPracticeCase,
     layer_num: int,
@@ -171,24 +256,37 @@ async def generate_and_test_bp_case(
 
 async def main_async(args):
     """Main async entry point."""
-    # Step 1: Extract Best Practice cases from clustering
+    # Step 1: Extract Best Practice cases
     clustered_excel = Path(args.clustered_excel).expanduser()
     print(f"{'='*70}")
-    print(f"Step 1: Extract Best Practice from clustering")
+    print(f"Step 1: Extract Best Practice")
     print(f"{'='*70}")
-    print(f"Clustered Excel: {clustered_excel}")
-    print(f"Target cases: {args.target_total}")
-    print()
 
-    bp_cases = extract_best_practices(
-        clustered_excel=clustered_excel,
-        target_total=args.target_total,
-        filters={
-            "min_cluster_size": args.min_cluster_size,
-            "require_alf": False,
-            "max_per_cluster": args.max_per_cluster,
-        }
-    )
+    if args.manual_bp:
+        # Manual BP selection
+        manual_bp_file = Path(args.manual_bp).expanduser()
+        print(f"Mode: Manual selection")
+        print(f"Manual BP file: {manual_bp_file}")
+        print(f"Clustered Excel: {clustered_excel}")
+        print()
+
+        bp_cases = load_manual_bp(manual_bp_file, clustered_excel)
+    else:
+        # Automatic extraction from clustering
+        print(f"Mode: Automatic extraction from clustering")
+        print(f"Clustered Excel: {clustered_excel}")
+        print(f"Target cases: {args.target_total}")
+        print()
+
+        bp_cases = extract_best_practices(
+            clustered_excel=clustered_excel,
+            target_total=args.target_total,
+            filters={
+                "min_cluster_size": args.min_cluster_size,
+                "require_alf": False,
+                "max_per_cluster": args.max_per_cluster,
+            }
+        )
 
     print(f"✅ Extracted {len(bp_cases)} Best Practice cases")
     from collections import Counter
@@ -337,22 +435,27 @@ def main():
         help="Output directory for results",
     )
     parser.add_argument(
+        "--manual-bp",
+        help="Path to manual Best Practice file (TSV/CSV/Excel with user_chat_id or url column). "
+             "If provided, uses manual selection instead of automatic extraction.",
+    )
+    parser.add_argument(
         "--target-total",
         type=int,
         default=100,
-        help="Target number of Best Practice cases to extract (default: 100)",
+        help="Target number of Best Practice cases to extract (default: 100, ignored if --manual-bp)",
     )
     parser.add_argument(
         "--min-cluster-size",
         type=int,
         default=10,
-        help="Minimum cluster size to consider (default: 10)",
+        help="Minimum cluster size to consider (default: 10, ignored if --manual-bp)",
     )
     parser.add_argument(
         "--max-per-cluster",
         type=int,
         default=10,
-        help="Maximum cases per cluster (default: 10)",
+        help="Maximum cases per cluster (default: 10, ignored if --manual-bp)",
     )
     parser.add_argument(
         "--layer-strategy",

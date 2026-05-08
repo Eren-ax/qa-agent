@@ -96,14 +96,10 @@ Step 4. Generate QA Report ─────── QA 리포트 생성
 
 ## 빠른 시작
 
-### 1. Best Practice 추출
-```bash
-python3 tools/best_practice_extractor.py \
-  ~/sop-agent/results/벨리에v2/01_clustering/벨리에_clustered.xlsx \
-  100
-```
+### 옵션 A: 자동 추출 (추천)
 
-### 2. QA 실행 (전체 파이프라인)
+Clustering 결과에서 자동으로 Best Practice를 추출합니다.
+
 ```bash
 uv run python run_bp_qa.py \
   --clustered-excel ~/sop-agent/results/벨리에v2/01_clustering/벨리에_clustered.xlsx \
@@ -111,6 +107,28 @@ uv run python run_bp_qa.py \
   --output-dir storage/qa_$(date +%Y%m%d) \
   --target-total 100
 ```
+
+### 옵션 B: 수동 지정
+
+특정 UserChat을 직접 지정하여 테스트합니다.
+
+```bash
+# 1. manual_bp.tsv 파일 생성 (user_chat_id 또는 url 컬럼)
+cat > manual_bp.tsv <<EOF
+user_chat_id	intent
+6997a6f8bc02a881342e	데님 팬츠 재입고 문의
+6981fe3c37a26d3d48a5	반품 수거 지연
+EOF
+
+# 2. QA 실행
+uv run python run_bp_qa.py \
+  --clustered-excel ~/sop-agent/results/벨리에v2/01_clustering/벨리에_clustered.xlsx \
+  --channel-url https://vqnol.channel.io \
+  --output-dir storage/qa_manual \
+  --manual-bp manual_bp.tsv
+```
+
+**자세한 가이드**: [`docs/manual-bp-selection.md`](docs/manual-bp-selection.md)
 
 ### 3. 결과 확인
 ```bash

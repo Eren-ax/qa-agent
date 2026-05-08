@@ -5,18 +5,33 @@
 
 ## What's New
 
-### 1. Automatic Best Practice Extraction
-**Before (v2):** Manual Excel creation — DS selects BP cases, creates Excel with specific format  
-**After (v3):** Automatic extraction from sop-agent clustering results
+### 1. Flexible Best Practice Selection
+**Before (v2):** Manual Excel creation only — DS selects BP cases, creates Excel with specific format  
+**After (v3):** Two modes supported
+
+#### Mode A: Automatic Extraction (추천)
+Automatic extraction from sop-agent clustering results
+
+#### Mode B: Manual Selection
+User specifies exact UserChat IDs to test
 
 ```bash
-# Old way: Manual Excel
+# Old way (v2): Manual Excel
 # ~/Downloads/차란 - Best Practice.xlsx (수작업)
 
-# New way: Automatic from clustering
-python3 tools/best_practice_extractor.py \
-  ~/sop-agent/results/벨리에v2/01_clustering/벨리에_clustered.xlsx \
-  100
+# New way A (v3): Automatic from clustering
+uv run python run_bp_qa.py \
+  --clustered-excel ~/sop-agent/results/벨리에v2/01_clustering/벨리에_clustered.xlsx \
+  --channel-url https://vqnol.channel.io \
+  --output-dir storage/qa_auto \
+  --target-total 100
+
+# New way B (v3): Manual selection
+uv run python run_bp_qa.py \
+  --clustered-excel ~/sop-agent/results/벨리에v2/01_clustering/벨리에_clustered.xlsx \
+  --channel-url https://vqnol.channel.io \
+  --output-dir storage/qa_manual \
+  --manual-bp manual_bp.tsv
 ```
 
 **Key Features:**

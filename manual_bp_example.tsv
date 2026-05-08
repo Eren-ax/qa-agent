@@ -1,0 +1,4 @@
+user_chat_id	intent	category
+6997a6f8bc02a881342e	데님 팬츠 재입고 문의	제품_문의
+6981fe3c37a26d3d48a5	반품 수거 지연	주문_취소_반품
+6988780ceba5a39d52bd	교환 신청	교환_배송
