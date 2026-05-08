@@ -150,7 +150,11 @@ class PlaywrightDriver(ChatDriver):
     async def open(self, channel_url: str) -> list[AlfMessage]:
         self._pw = await async_playwright().start()
         # Launch with args to avoid bot detection
-        launch_args = ["--disable-blink-features=AutomationControlled"]
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+        ]
         self._browser = await self._pw.chromium.launch(
             headless=self._headless,
             slow_mo=self._slow_mo_ms,
@@ -158,9 +162,16 @@ class PlaywrightDriver(ChatDriver):
         )
         # Set realistic user agent to avoid headless detection
         self._ctx = await self._browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080},
+            locale="ko-KR",
+            timezone_id="Asia/Seoul",
         )
+        # Inject anti-detection script
+        await self._ctx.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            window.chrome = {runtime: {}};
+        """)
         self._page = await self._ctx.new_page()
 
         await self._page.goto(channel_url, wait_until="domcontentloaded")
