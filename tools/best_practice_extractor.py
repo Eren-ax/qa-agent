@@ -28,6 +28,8 @@ from typing import Optional
 
 import pandas as pd
 
+from tools.outcome_scorer import calculate_outcome_score
+
 
 @dataclass
 class BestPracticeCase:
@@ -53,6 +55,10 @@ class BestPracticeCase:
     alf_triggered: bool
     time_to_first_answer: Optional[float]
     reply_count: int
+
+    # Layer 1: Customer Satisfaction (Outcome)
+    outcome_score: float = 0.0  # 0~7.0
+    outcome_breakdown: Optional[dict] = None  # Detailed scores
 
     @property
     def intent(self) -> str:
@@ -155,31 +161,25 @@ def extract_best_practices(
     for cluster_id, target_count in allocation.items():
         cluster_df = df[df['cluster_id'] == cluster_id].copy()
 
-        # Score each chat for quality
-        cluster_df['quality_score'] = 0.0
+        # Calculate outcome score (Layer 1: Customer Satisfaction)
+        outcome_results = cluster_df.apply(
+            lambda row: calculate_outcome_score(row, all_data=df),
+            axis=1
+        )
 
-        # +1 for closed state (resolved)
-        cluster_df.loc[cluster_df['state'] == 'closed', 'quality_score'] += 1.0
+        cluster_df['outcome_score'] = outcome_results.apply(lambda x: x['total'])
+        cluster_df['outcome_breakdown'] = outcome_results.apply(lambda x: x['scores'])
 
-        # +1 for positive CSAT
-        cluster_df.loc[cluster_df['profile.csat'] > 0, 'quality_score'] += 1.0
-
-        # +0.5 for priority tags
+        # Additional priority adjustments
         if priority_tags:
             has_priority = cluster_df['tags'].apply(
                 lambda x: any(tag in str(x).lower() for tag in priority_tags) if pd.notna(x) else False
             )
-            cluster_df.loc[has_priority, 'quality_score'] += 0.5
+            # Add bonus to outcome_score for priority cases
+            cluster_df.loc[has_priority, 'outcome_score'] += 0.5
 
-        # +0.5 for ALF triggered (if not required)
-        if not require_alf:
-            cluster_df.loc[cluster_df['alfTriggered'] == True, 'quality_score'] += 0.5
-
-        # -0.5 for very long response time (> 1 hour)
-        cluster_df.loc[cluster_df['timeToFirstAnswer'] > 3600, 'quality_score'] -= 0.5
-
-        # Sort by quality score, then sample
-        cluster_df = cluster_df.sort_values('quality_score', ascending=False)
+        # Sort by outcome score, then sample
+        cluster_df = cluster_df.sort_values('outcome_score', ascending=False)
 
         # Take top N, with some randomness
         if len(cluster_df) <= target_count:
@@ -209,6 +209,8 @@ def extract_best_practices(
                 alf_triggered=bool(row['alfTriggered']) if pd.notna(row['alfTriggered']) else False,
                 time_to_first_answer=float(row['timeToFirstAnswer']) if pd.notna(row['timeToFirstAnswer']) else None,
                 reply_count=int(row['replyCount']) if pd.notna(row['replyCount']) else 0,
+                outcome_score=float(row['outcome_score']),
+                outcome_breakdown=row['outcome_breakdown'],
             )
             selected_cases.append(case)
 
