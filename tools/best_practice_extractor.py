@@ -29,6 +29,7 @@ from typing import Optional
 import pandas as pd
 
 from tools.outcome_scorer import calculate_outcome_score
+from tools.adoption_classifier import classify_task_type, TaskClassification
 
 
 @dataclass
@@ -60,6 +61,11 @@ class BestPracticeCase:
     outcome_score: float = 0.0  # 0~7.0
     outcome_breakdown: Optional[dict] = None  # Detailed scores
 
+    # Layer 3: Implementation Difficulty (Adoption)
+    task_type: str = "Unknown"  # "RAG" | "Text Task" | "Function Task"
+    task_type_confidence: float = 0.0  # 0.0~1.0
+    task_type_reason: str = ""
+
     @property
     def intent(self) -> str:
         """Intent derived from cluster label."""
@@ -76,6 +82,7 @@ def extract_best_practices(
     target_total: int = 100,
     filters: Optional[dict] = None,
     random_seed: int = 42,
+    classify_adoption: bool = True,
 ) -> list[BestPracticeCase]:
     """Extract Best Practice cases from clustering results.
 
@@ -88,6 +95,7 @@ def extract_best_practices(
             - priority_tags: Tags to prioritize (default: [])
             - max_per_cluster: Max cases per cluster (default: 10)
         random_seed: Random seed for reproducibility
+        classify_adoption: Classify task type (Layer 3) (default: True)
 
     Returns:
         List of BestPracticeCase, distributed across clusters
@@ -194,6 +202,21 @@ def extract_best_practices(
 
         # Convert to BestPracticeCase
         for _, row in sampled.iterrows():
+            # Classify task type (Layer 3)
+            if classify_adoption:
+                task_classification = classify_task_type(
+                    intent=row['label'] if pd.notna(row['label']) else "",
+                    enhanced_text=row['enhanced_text'] if pd.notna(row['enhanced_text']) else "",
+                    alf_triggered=bool(row['alfTriggered']) if pd.notna(row['alfTriggered']) else False,
+                    use_llm_fallback=False  # Use heuristic only for speed
+                )
+            else:
+                task_classification = TaskClassification(
+                    task_type="Unknown",
+                    confidence=0.0,
+                    reason="Classification skipped"
+                )
+
             case = BestPracticeCase(
                 user_chat_id=row['id'],
                 user_chat_url=row['url'],
@@ -211,6 +234,9 @@ def extract_best_practices(
                 reply_count=int(row['replyCount']) if pd.notna(row['replyCount']) else 0,
                 outcome_score=float(row['outcome_score']),
                 outcome_breakdown=row['outcome_breakdown'],
+                task_type=task_classification.task_type,
+                task_type_confidence=task_classification.confidence,
+                task_type_reason=task_classification.reason,
             )
             selected_cases.append(case)
 
