@@ -208,6 +208,19 @@ async def main_async(args):
     with open(style_bank_path, encoding="utf-8") as f:
         style_bank = json.load(f)
 
+    # Load best practices if provided
+    best_practice_records = []
+    if args.best_practice:
+        from tools.best_practice_loader import load_best_practices
+
+        bp_path = Path(args.best_practice).expanduser()
+        best_practice_records = load_best_practices(
+            bp_path,
+            priority_only=args.bp_priority_only,
+            rag_only=args.bp_rag_only,
+        )
+        print(f"Loaded {len(best_practice_records)} best practice records")
+
     # Select random intents (with replacement if num_intents > available clusters)
     random.seed(42)
     all_clusters = list(style_bank.items())
@@ -220,13 +233,26 @@ async def main_async(args):
     print(f"{'='*60}")
     print(f"3-Layer Test Run")
     print(f"{'='*60}")
-    print(f"Intents: {args.num_intents}")
+    print(f"Random Intents: {args.num_intents}")
+    if best_practice_records:
+        print(f"Best Practice: {len(best_practice_records)}")
+        print(f"  - Priority only: {args.bp_priority_only}")
+        print(f"  - RAG only: {args.bp_rag_only}")
     print(f"Channel: {args.channel_url}")
     print(f"Output: {args.output_dir}")
     print()
 
+    print("Random Intents:")
     for i, (cluster_id, data) in enumerate(selected_clusters, 1):
-        print(f"[{i}/{args.num_intents}] {data['label']}")
+        print(f"  [{i}/{args.num_intents}] {data['label']}")
+
+    if best_practice_records:
+        print()
+        print("Best Practice Cases:")
+        for i, bp in enumerate(best_practice_records[:10], 1):
+            print(f"  [{i}] {bp.intent[:60]}...")
+            if i == 10 and len(best_practice_records) > 10:
+                print(f"  ... and {len(best_practice_records) - 10} more")
 
     # Setup
     llm_client, model, provider = create_llm_client()
@@ -242,7 +268,7 @@ async def main_async(args):
         "layer3": {"messages": [], "transcripts": []},
     }
 
-    # Test each intent with all 3 layers
+    # Test random intents with all 3 layers
     for i, (cluster_id, cluster_data) in enumerate(selected_clusters, 1):
         intent = cluster_data["label"]
         utterances = cluster_data["utterances"]
@@ -250,7 +276,7 @@ async def main_async(args):
         layer1_msg, layer2_msg, layer3_msg, t1, t2, t3 = await test_scenario_3layers(
             intent=intent,
             utterances=utterances,
-            scenario_id_base=f"charan_{i:03d}",
+            scenario_id_base=f"random_{i:03d}",
             channel_url=args.channel_url,
             llm_client=llm_client,
             provider=provider,
@@ -266,6 +292,81 @@ async def main_async(args):
         results["layer2"]["transcripts"].append(t2)
         results["layer3"]["messages"].append(layer3_msg)
         results["layer3"]["transcripts"].append(t3)
+
+    # Test best practice cases
+    if best_practice_records:
+        print("\n" + "="*60)
+        print("Testing Best Practice Cases")
+        print("="*60)
+
+        for i, bp in enumerate(best_practice_records, 1):
+            print(f"\n[{i}/{len(best_practice_records)}] {bp.intent[:60]}...")
+            print(f"  URL: {bp.url}")
+            print(f"  Classification: {bp.classification}")
+
+            # TODO: Extract actual initial message from UserChat URL
+            # For now, use intent as placeholder
+            initial_msg_placeholder = f"[Best Practice] {bp.intent}"
+
+            # Find matching cluster in style bank for style reference
+            matching_cluster = None
+            for cluster_id, cluster_data in style_bank.items():
+                if bp.subcategory in cluster_data["label"] or bp.intent[:20] in cluster_data["label"]:
+                    matching_cluster = cluster_data
+                    break
+
+            if not matching_cluster:
+                # Use first cluster as fallback
+                matching_cluster = list(style_bank.values())[0]
+
+            utterances = matching_cluster["utterances"]
+
+            # Generate Layer 1 and 3 (Layer 2 = use placeholder initial message)
+            layer1_msg = generate_layer1(bp.intent, utterances)
+            layer2_msg = initial_msg_placeholder  # TODO: Extract real message
+            layer3_msg = generate_layer3(bp.intent, utterances)
+
+            print(f"  Layer 1: \"{layer1_msg[:60]}...\"")
+            print(f"  Layer 2: \"{layer2_msg[:60]}...\"")
+            print(f"  Layer 3: \"{layer3_msg[:60]}...\"")
+
+            # Test all 3 layers
+            for layer_num, layer_msg in [(1, layer1_msg), (2, layer2_msg), (3, layer3_msg)]:
+                print(f"\n  Testing Layer {layer_num}...")
+
+                scenario = Scenario(
+                    id=f"bp_{bp.user_chat_id[:8]}_layer{layer_num}",
+                    intent=bp.intent,
+                    persona_ref="polite_clear",
+                    initial_message=layer_msg,
+                    success_criteria=[],
+                    max_turns=6,
+                    weight=0.2,
+                    difficulty_tier="happy",
+                    source=f"best-practice-layer{layer_num}",
+                    phase="rag",
+                )
+
+                try:
+                    transcript = await run_one_scenario(
+                        scenario,
+                        channel_url=args.channel_url,
+                        run_id=f"best-practice-layer{layer_num}",
+                        llm_client=llm_client,
+                        provider=provider,
+                        model=PERSONA_MODEL,
+                        persona_system_prompt=persona_system_prompt,
+                        client_tone=None,
+                        headed=args.headed,
+                        timeout=args.timeout,
+                    )
+                    results[f"layer{layer_num}"]["transcripts"].append(transcript)
+                    print(f"    → {transcript.terminated_reason} ({len(transcript.turns)} turns)")
+                except Exception as e:
+                    print(f"    → ERROR: {e}")
+
+                # Delay between layers
+                await asyncio.sleep(2)
 
     # Save transcripts
     from dataclasses import asdict
@@ -328,6 +429,20 @@ def main():
         type=int,
         default=5,
         help="Number of intents to test (default: 5)",
+    )
+    parser.add_argument(
+        "--best-practice",
+        help="Path to best practice Excel file (e.g., ~/Downloads/차란 - Best Practice.xlsx)",
+    )
+    parser.add_argument(
+        "--bp-priority-only",
+        action="store_true",
+        help="Use only ⭐ priority best practices",
+    )
+    parser.add_argument(
+        "--bp-rag-only",
+        action="store_true",
+        help="Use only 🟢 RAG best practices (no admin dependency)",
     )
     parser.add_argument(
         "--channel-url",

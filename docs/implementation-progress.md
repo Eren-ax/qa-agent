@@ -167,22 +167,21 @@ sop-agent clustering (*_clustered.xlsx)
 [run_bp_qa.py]
     ├─ generate_scenarios
     ├─ execute QA tests
-    └─ transcripts.jsonl
+    ├─ transcripts.jsonl
+    └─ [자동 실행] tools/bp_qa_report_generator.py  ✅ 구현 (2026-05-11)
+        ├─ calculate_qa_score()  ← 10점 만점 (accuracy 5 + completeness 3 + tone 2)
+        └─ 결과 분류 (🟢 성공 / 🟡 부분 성공 / 🟠 타임아웃 / 🔴 오류)
     ↓
-[tools/scoring_agent.py]  🔶 Phase 3 필요
-    └─ score_transcript_v2()  ← 5차원 평가
-    ↓
-scores.json {
-    outcome_score: {...},     ✅
-    process_score: {...},     🔶 미구현
-    task_type: "RAG",         ✅
-    priority: "P0"            🔶 미구현
-}
-    ↓
-[tools/integrated_report_generator.py]  🔶 Phase 4 필요
-    ├─ 고객용 리포트 (BP vs ALF)
-    └─ 내부용 대시보드 (우선순위 분포)
+QA_REPORT_<client>.html + .md  ✅ 생성
+    ├─ BP vs ALF 1:1 비교 (케이스별)
+    ├─ 채팅 말풍선 UI
+    └─ 요약 테이블 (결과별 건수/비율/평균 점수)
 ```
+
+**변경사항 (2026-05-11)**:
+- `tools/bp_qa_report_generator.py` 신규 생성 (차란 리포트 일반화)
+- `run_bp_qa.py`에서 QA 실행 후 자동으로 리포트 생성
+- Phase 3+4 (5차원 평가, 우선순위) 불필요 → 10점 만점 단순 평가로 대체
 
 ---
 
@@ -214,12 +213,15 @@ for case in cases:
 - 고객 만족도 분포 (outcome_score)
 - 도입 난이도 분포 (task_type)
 - 클러스터별 자동화 가능성
+- ✅ **BP vs ALF QA 리포트** (10점 만점, HTML/MD)
+- ✅ **케이스별 상세 비교** (BP 유저챗 + 실제 ALF 대화)
+- ✅ **결과 카테고리** (성공/부분성공/타임아웃/오류)
 
-**분석 불가** (Phase 3+4 필요):
-- 응대 품질 5차원 점수
-- P0/P1/P2 우선순위
-- 자동화율 예측
-- 영업 메시지 자동 생성
+**분석 불가** (Phase 3+4 미구현, 불필요):
+- 응대 품질 5차원 점수 → 10점 만점 단순 평가로 대체
+- P0/P1/P2 우선순위 → outcome_score + task_type 조합으로 수동 판단
+- 자동화율 예측 → 리포트 요약 테이블에서 수동 계산
+- 영업 메시지 자동 생성 → 리포트 보고 수동 작성
 
 ---
 

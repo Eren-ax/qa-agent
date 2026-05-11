@@ -69,10 +69,11 @@ Step 3. Execute QA Tests ───────── ALF 테스트 실행
     │                              - transcripts.jsonl
     │
     ▼
-Step 4. Generate QA Report ─────── QA 리포트 생성
-                                   - BP vs 실제 ALF 비교
+Step 4. Generate QA Report ─────── QA 리포트 생성 (자동)
+                                   - BP vs 실제 ALF 1:1 비교
                                    - 점수 산정 (10점 만점)
-                                   - HTML 시각화 리포트
+                                   - HTML/Markdown 리포트
+                                   - 채팅 말풍선 UI
 ```
 
 모든 아티팩트는 `storage/<run_dir>/` 아래에 적재됩니다.
@@ -149,7 +150,9 @@ tools/
   scenario_generator.py        BP → QA 시나리오 생성 (Layer 1/2/3)
   chat_driver.py              Playwright 기반 채널톡 ALF 채팅 드라이버
   scenario_runner.py          시나리오 자동 실행 (페르소나 LLM + 드라이버)
-  qa_report_generator.py      BP vs ALF 비교 리포트 생성 (HTML/MD)
+  bp_qa_report_generator.py   ✅ BP vs ALF 비교 리포트 생성 (HTML/MD, 일반화)
+  outcome_scorer.py           계층 1 (Customer Satisfaction) 점수 계산
+  adoption_classifier.py      계층 3 (Task Type) 분류
   result_store.py             데이터 스키마 + I/O
 
 prompts/

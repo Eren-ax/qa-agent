@@ -32,6 +32,7 @@ from tools.best_practice_extractor import extract_best_practices, BestPracticeCa
 from tools.llm_client import create_llm_client, ProviderType
 from tools.result_store import Scenario, Transcript
 from tools.scenario_runner import run_one_scenario, PERSONA_FILE, PERSONA_MODEL
+from tools.bp_qa_report_generator import generate_bp_qa_reports
 import pandas as pd
 
 
@@ -404,12 +405,29 @@ async def main_async(args):
     print(f"  Layer 3: {layer_counts[3]}")
     print(f"\n✅ Transcripts saved to: {output_path}")
     print()
-    print("Next steps:")
-    print(f"  1. Generate QA report:")
-    print(f"     python3 generate_qa_report.py \\")
-    print(f"       --transcripts {output_path} \\")
-    print(f"       --clustered-excel {clustered_excel} \\")
-    print(f"       --output-dir {output_dir}")
+
+    # Generate QA reports automatically
+    print("📊 Generating QA reports...")
+    try:
+        # Extract client name from clustered_excel path
+        # e.g., ~/sop-agent/results/차란/01_clustering/차란_clustered.xlsx -> 차란
+        excel_path = Path(clustered_excel)
+        client_name = excel_path.parent.parent.name if excel_path.parent.parent.name != "results" else "Client"
+
+        html_path, md_path = generate_bp_qa_reports(
+            transcripts_path=output_path,
+            output_dir=output_dir,
+            client_name=client_name
+        )
+        print(f"✅ HTML 리포트 생성: {html_path}")
+        print(f"✅ Markdown 리포트 생성: {md_path}")
+    except Exception as e:
+        print(f"⚠️ 리포트 생성 실패: {e}")
+        print("   수동으로 생성하려면:")
+        print(f"     python3 -m tools.bp_qa_report_generator \\")
+        print(f"       {output_path} \\")
+        print(f"       {output_dir} \\")
+        print(f"       <client_name>")
     print()
 
     return 0
