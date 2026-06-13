@@ -1,0 +1,46 @@
+{
+  "schema_version": "v0",
+  "run_id": "r-20260413-example",
+  "captured_at": "2026-04-13T16:00:00+00:00",
+  "channel_url": "https://vqnol.channel.io",
+  "knowledge_summary": [
+    {
+      "id": "kb-001",
+      "category": "반품/환불",
+      "title": "환불 정책 안내",
+      "last_updated": "2026-04-10"
+    },
+    {
+      "id": "kb-002",
+      "category": "배송",
+      "title": "배송 리드타임 및 추적",
+      "last_updated": "2026-04-08"
+    }
+  ],
+  "rules_summary": [
+    {
+      "id": "rule-001",
+      "name": "VIP 고객 반말 금지",
+      "trigger": "customer_tier=VIP"
+    }
+  ],
+  "tasks_summary": [
+    {
+      "id": "task-001",
+      "name": "반품 처리",
+      "intent": "refund_request",
+      "external_admin_required": true
+    },
+    {
+      "id": "task-002",
+      "name": "배송 조회",
+      "intent": "delivery_status",
+      "external_admin_required": true
+    }
+  ],
+  "sop_result_ref": "inputs/sample-sop-20260413.json",
+  "extra": {
+    "client_name": "벨리에 (sample)",
+    "captured_by": "qa-agent v0.1.0"
+  }
+}
